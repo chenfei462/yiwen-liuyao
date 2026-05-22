@@ -6,7 +6,7 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     return NextResponse.json({
-      assignment: assignExperiment({
+      assignment: await assignExperiment({
         anonymous_id: url.searchParams.get("anonymous_id") ?? "",
         surface: url.searchParams.get("surface") ?? "home",
       }),

@@ -1,0 +1,11 @@
+.env*
+.data/
+.next/
+.playwright-cli/
+coverage/
+output/
+test-results/
+*.tsbuildinfo
+.codex-*.log
+.codex-*.png
+.next-dev-*.log

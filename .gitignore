@@ -13,6 +13,7 @@
 # testing
 /coverage
 /output/
+/test-results/
 .playwright-cli/
 
 # next.js
@@ -32,6 +33,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 .codex-*.log
+.codex-*.png
+.next-dev-*.log
 
 # local MVP runtime data
 .data/

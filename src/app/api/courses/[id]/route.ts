@@ -4,7 +4,7 @@ import { getCourse } from "@/domain/reading-service";
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    return NextResponse.json({ course: getCourse(id) });
+    return NextResponse.json({ course: await getCourse(id) });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Course not found")) {
       return NextResponse.json({ error: "course_not_found" }, { status: 404 });

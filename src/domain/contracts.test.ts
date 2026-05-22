@@ -77,6 +77,27 @@ describe("API contracts", () => {
     expect(cast.month_branch).toBe("辰");
   });
 
+  test("accepts time cast request without explicit line values", () => {
+    const cast = CastRequestSchema.parse({
+      reading_id: "reading_time",
+      cast_method: "time",
+      cast_time: "2026-05-05",
+    });
+
+    expect(cast.cast_method).toBe("time");
+    expect(cast.line_values).toBeUndefined();
+  });
+
+  test("rejects non-time cast request without six lines", () => {
+    expect(() =>
+      CastRequestSchema.parse({
+        reading_id: "reading_manual",
+        cast_method: "manual",
+        cast_time: "2026-05-05",
+      }),
+    ).toThrow("line_values must contain exactly six bottom-to-top values");
+  });
+
   test("rejects scenarios and line values outside the MVP 0.1 scope", () => {
     expect(() =>
       InitReadingRequestSchema.parse({

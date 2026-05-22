@@ -132,4 +132,35 @@ describe("Rule Engine v0", () => {
       ]),
     );
   });
+
+  test("keeps exam analysis useful when the primary parent line is hidden", () => {
+    const analysis = analyzeRules({
+      readingId: "reading_exam_tai",
+      question: "明天考试能过吗",
+      scenario: "考试",
+      mode: "light",
+      safety: allowedSafety,
+      chart: castChart({ lineValues: [7, 7, 7, 8, 8, 8], dayGanzhi: "丙子" }),
+      dateContext: {
+        cast_time: "2026-05-02",
+        day_ganzhi: "丙子",
+        month_branch: "辰",
+        month_source: "jieqi_table",
+      },
+    });
+    const text = JSON.stringify(analysis);
+
+    expect(analysis.evidence_tree).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ conclusion: expect.stringContaining("地天泰") }),
+        expect.objectContaining({ conclusion: expect.stringContaining("静卦") }),
+        expect.objectContaining({ conclusion: expect.stringContaining("世爻") }),
+        expect.objectContaining({ conclusion: expect.stringContaining("官鬼") }),
+      ]),
+    );
+    expect(text).toContain("父母");
+    expect(text).toContain("不显");
+    expect(text).toContain("腾蛇");
+    expect(analysis.verdict.summary).toContain("过关机会");
+  });
 });

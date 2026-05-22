@@ -13,7 +13,7 @@ export async function GET(request: Request) {
 
   try {
     return NextResponse.json({
-      cards: queryKnowledgeCards({
+      cards: await queryKnowledgeCards({
         reading_id: url.searchParams.get("reading_id") ?? undefined,
         rule_id: url.searchParams.get("rule_id") ?? undefined,
         term: url.searchParams.get("term") ?? undefined,

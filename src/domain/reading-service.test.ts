@@ -10,21 +10,23 @@ import {
   messageReading,
   queryKnowledgeCards,
   resetReadingStoreForTests,
+  setReadingSnapshotStoreForTests,
 } from "./reading-service";
 
 describe("reading service stage-1 persistence", () => {
   beforeEach(() => {
     resetReadingStoreForTests();
+    setReadingSnapshotStoreForTests(null);
   });
 
-  test("uses explicit day_ganzhi for cast facts and stores a desensitized history record", () => {
-    const init = initReading({
+  test("uses explicit day_ganzhi for cast facts and stores a desensitized history record", async () => {
+    const init = await initReading({
       question: "这次面试有没有机会，想看三周内的结果",
       scenario: "事业",
       timezone: "Asia/Shanghai",
     });
 
-    const cast = castReading({
+    const cast = await castReading({
       reading_id: init.reading_id,
       cast_method: "manual",
       line_values: [7, 7, 7, 7, 7, 7],
@@ -35,7 +37,7 @@ describe("reading service stage-1 persistence", () => {
     expect(cast.day_ganzhi).toBe("甲戌");
     expect(cast.base_chart.xunkong).toEqual(["申", "酉"]);
 
-    const [historyItem] = listReadingHistory();
+    const [historyItem] = await listReadingHistory();
     expect(historyItem).toMatchObject({
       reading_id: init.reading_id,
       scenario: "事业",
@@ -46,14 +48,14 @@ describe("reading service stage-1 persistence", () => {
     expect(historyItem).not.toHaveProperty("question");
   });
 
-  test("derives day_ganzhi from cast_time and deletes history records", () => {
-    const init = initReading({
+  test("derives day_ganzhi from cast_time and deletes history records", async () => {
+    const init = await initReading({
       question: "这次考试如何复习更稳",
       scenario: "考试",
       timezone: "Asia/Shanghai",
     });
 
-    const cast = castReading({
+    const cast = await castReading({
       reading_id: init.reading_id,
       cast_method: "manual",
       line_values: [7, 7, 7, 7, 7, 7],
@@ -61,25 +63,51 @@ describe("reading service stage-1 persistence", () => {
     });
 
     expect(cast.day_ganzhi).toBe("甲戌");
-    expect(listReadingHistory()).toHaveLength(1);
-    expect(deleteReadingHistory(init.reading_id)).toEqual({ deleted: true });
-    expect(listReadingHistory()).toHaveLength(0);
+    expect(await listReadingHistory()).toHaveLength(1);
+    expect(await deleteReadingHistory(init.reading_id)).toEqual({ deleted: true });
+    expect(await listReadingHistory()).toHaveLength(0);
   });
 
-  test("analyzes a cast chart into a traceable MVP 0.2 evidence tree", () => {
-    const init = initReading({
+  test("time cast derives deterministic six lines and stores a time-method history record", async () => {
+    const init = await initReading({
+      question: "今天用时间起卦看看项目复盘重点",
+      scenario: "事业",
+      timezone: "Asia/Shanghai",
+    });
+
+    const cast = await castReading({
+      reading_id: init.reading_id,
+      cast_method: "time",
+      cast_time: "2026-05-05",
+    });
+
+    expect(cast.cast_method).toBe("time");
+    expect(cast.lines).toHaveLength(6);
+    expect(cast.lines.map((line) => line.value).every((value) => [6, 7, 8, 9].includes(value))).toBe(true);
+    expect(cast.lines.some((line) => line.moving)).toBe(true);
+
+    const [historyItem] = await listReadingHistory();
+    expect(historyItem).toMatchObject({
+      reading_id: init.reading_id,
+      scenario: "事业",
+      cast_method: "time",
+    });
+  });
+
+  test("analyzes a cast chart into a traceable MVP 0.2 evidence tree", async () => {
+    const init = await initReading({
       question: "这次面试有没有机会，想看三周内的结果",
       scenario: "事业",
       timezone: "Asia/Shanghai",
     });
 
-    const cast = castReading({
+    const cast = await castReading({
       reading_id: init.reading_id,
       cast_method: "manual",
       line_values: [7, 7, 7, 7, 7, 7],
       cast_time: "2026-04-30",
     });
-    const analysis = analyzeReading({
+    const analysis = await analyzeReading({
       reading_id: init.reading_id,
       mode: "learning",
     });
@@ -97,11 +125,11 @@ describe("reading service stage-1 persistence", () => {
     expect(analysis.counter_evidence.length).toBeGreaterThanOrEqual(1);
     expect(analysis.evidence_tree.every((node) => node.rule_id.startsWith("B-"))).toBe(true);
 
-    const cached = analyzeReading({
+    const cached = await analyzeReading({
       reading_id: init.reading_id,
       mode: "learning",
     });
-    const refreshed = analyzeReading({
+    const refreshed = await analyzeReading({
       reading_id: init.reading_id,
       mode: "learning",
       force_refresh: true,
@@ -110,14 +138,14 @@ describe("reading service stage-1 persistence", () => {
     expect(refreshed.evidence_tree).toEqual(analysis.evidence_tree);
   });
 
-  test("does not analyze high-risk blocked readings into evidence", () => {
-    const init = initReading({
+  test("does not analyze high-risk blocked readings into evidence", async () => {
+    const init = await initReading({
       question: "明天买哪只股票会发财",
       scenario: "财务",
       timezone: "Asia/Shanghai",
     });
 
-    const analysis = analyzeReading({
+    const analysis = await analyzeReading({
       reading_id: init.reading_id,
       mode: "light",
     });
@@ -128,12 +156,12 @@ describe("reading service stage-1 persistence", () => {
   });
 
   test("explains a reading with retrieved knowledge cards and stores follow-up messages", async () => {
-    const init = initReading({
+    const init = await initReading({
       question: "这次面试有没有机会，想看三周内的结果",
       scenario: "事业",
       timezone: "Asia/Shanghai",
     });
-    castReading({
+    await castReading({
       reading_id: init.reading_id,
       cast_method: "manual",
       line_values: [7, 7, 7, 7, 7, 7],
@@ -165,29 +193,71 @@ describe("reading service stage-1 persistence", () => {
       (event): event is Extract<(typeof messageEvents)[number], { type: "final" }> => event.type === "final",
     );
 
-    expect(messageFinal?.data.summary).toContain("证据树");
-    expect(listReadingMessages(init.reading_id)).toHaveLength(2);
+    expect(messageFinal?.data.summary).toContain("用神");
+    expect(messageFinal?.data.summary).toContain("B-YS-001");
+    expect(await listReadingMessages(init.reading_id)).toHaveLength(2);
   });
 
-  test("returns only approved knowledge cards for reading context", () => {
-    const init = initReading({
+  test("returns only approved knowledge cards for reading context", async () => {
+    const init = await initReading({
       question: "这次考试如何复习更稳",
       scenario: "考试",
       timezone: "Asia/Shanghai",
     });
-    castReading({
+    await castReading({
       reading_id: init.reading_id,
       cast_method: "manual",
       line_values: [7, 7, 7, 7, 7, 7],
       cast_time: "2026-04-30",
     });
 
-    const cards = queryKnowledgeCards({
+    const cards = await queryKnowledgeCards({
       reading_id: init.reading_id,
       term: "用神",
     });
 
     expect(cards.length).toBeGreaterThan(0);
     expect(cards.every((card) => card.status === "approved")).toBe(true);
+  });
+});
+
+describe("reading service PostgreSQL snapshot persistence", () => {
+  beforeEach(() => {
+    resetReadingStoreForTests();
+    setReadingSnapshotStoreForTests(null);
+  });
+
+  test("saves a full snapshot and hydrates it back into cleared in-memory maps when explicitly configured", async () => {
+    const savedSnapshots = new Map<string, unknown>();
+    const snapshotStore = {
+      load: async (scope: string) => savedSnapshots.get(scope) ?? null,
+      save: async (scope: string, payload: unknown) => {
+        savedSnapshots.set(scope, structuredClone(payload));
+      },
+    };
+
+    setReadingSnapshotStoreForTests(snapshotStore);
+
+    const init = await initReading({
+      question: "这次考试如何复习更稳",
+      scenario: "考试",
+      timezone: "Asia/Shanghai",
+    });
+    await castReading({
+      reading_id: init.reading_id,
+      cast_method: "manual",
+      line_values: [7, 7, 7, 7, 7, 7],
+      cast_time: "2026-04-30",
+    });
+
+    resetReadingStoreForTests();
+    setReadingSnapshotStoreForTests(snapshotStore);
+
+    expect(await listReadingHistory()).toMatchObject([
+      {
+        reading_id: init.reading_id,
+        scenario: "考试",
+      },
+    ]);
   });
 });

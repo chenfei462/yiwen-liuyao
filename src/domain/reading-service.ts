@@ -1,9 +1,7 @@
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
 import { castChart, type CastChartResult } from "./chart-engine";
 import { resolveDayGanzhi, resolveMonthBranch, type BranchName, type DayGanzhi, type MonthSource } from "./calendar";
-import { explainWithAi, type AiStreamEvent } from "./ai-orchestrator";
+import { explainWithAi } from "./ai-orchestrator";
 import {
   AnalyzeRequestSchema,
   AdminCasePatchSchema,
@@ -139,12 +137,14 @@ import {
   type VoiceJobStatus,
   type VoiceTranscribeRequest,
 } from "./contracts";
-import { EXERCISE_SEEDS, KNOWLEDGE_CARD_SEEDS, searchKnowledgeCards, type ExerciseSeed, type KnowledgeCard } from "./knowledge-base";
+import { EXERCISE_SEEDS, KNOWLEDGE_CARD_SEEDS, searchKnowledgeCards, type KnowledgeCard } from "./knowledge-base";
+import { createPostgresSnapshotStore, READING_SNAPSHOT_SCOPE, type SnapshotStore } from "./postgres-snapshot-store";
 import { analyzeRules, type RuleAnalysisResult } from "./rule-engine";
 import { classifyQuestion, type SafetyClassification } from "./safety";
 
 type ReadingRecord = InitReadingRequest & {
   id: string;
+  owner_id: string;
   safety: SafetyClassification;
   created_at: string;
 };
@@ -164,6 +164,7 @@ export type ReadingHistoryItem = {
 };
 
 type CastRecord = ReadingHistoryItem & {
+  owner_id: string;
   chart_json: CastChartResult;
   updated_at: string;
 };
@@ -544,6 +545,7 @@ export type PrivacyDataExportRecord = {
   status: PrivacyExportStatus;
   export_format: PrivacySettingsRequest["export_format"];
   includes_raw_question_text: false;
+  includes_private_followups: false;
   download_url: string;
   created_at: string;
   completed_at?: string;
@@ -605,7 +607,7 @@ const CASE_SCENARIOS: InitReadingRequest["scenario"][] = ["事业", "财务", "�
 const CASE_DIFFICULTIES: CaseDifficulty[] = ["beginner", "intermediate", "advanced"];
 const CASE_SOURCE_TYPES: CaseSourceType[] = ["classic", "editorial", "anonymized_user"];
 const RULE_ROTATION = ["B-YS-001", "B-WR-001", "B-DV-001", "B-XK-001", "B-SY-001", "B-HC-001"];
-const HEXAGRAM_ROTATION = ["乾为天", "坤为地", "水雷屯", "山水蒙", "水天需", "天水讼", "地水师", "水地比"];
+const HEXAGRAM_ROTATION = ["乾为�?", "坤为�?", "水雷�?", "山水�?", "水天需", "天水�?", "地水�?", "水地�?"];
 const YONGSHEN_BY_SCENARIO: Record<InitReadingRequest["scenario"], string> = {
   事业: "官鬼",
   财务: "妻财",
@@ -614,8 +616,8 @@ const YONGSHEN_BY_SCENARIO: Record<InitReadingRequest["scenario"], string> = {
   失物: "妻财",
   其他: "世爻",
 };
-const CREATOR_BANNED_TERMS = ["包准", "改命", "消灾", "一定复合", "一定发财", "诊断", "投资建议"];
-const CREATOR_SAFETY_NOTICE = "创作者素材仅用于传统文化学习、案例复盘和娱乐互动，不构成现实决策建议。";
+const CREATOR_BANNED_TERMS = ["包准", "改命", "消灾", "一定复�?", "一定发�?", "诊断", "投资建议"];
+const CREATOR_SAFETY_NOTICE = "创作者素材仅用于传统文化学习、案例复盘和娱乐互动，不构成现实决策建议�?";
 const ECOSYSTEM_BANNED_TERMS = [...CREATOR_BANNED_TERMS, "guaranteed", "get rich", "make someone return", "diagnosis", "investment advice"];
 const DEFAULT_CONTRIBUTOR_ID = "contributor_demo";
 const DEFAULT_CONTRIBUTOR_ROLES: ContributorRole[] = ["creator", "expert"];
@@ -633,14 +635,14 @@ const CASE_SEEDS: CaseRecord[] = Array.from({ length: 60 }, (_, index) => {
     source_type: CASE_SOURCE_TYPES[index % CASE_SOURCE_TYPES.length],
     difficulty: CASE_DIFFICULTIES[index % CASE_DIFFICULTIES.length],
     status: "approved",
-    question_preview: "问题已脱敏",
+    question_preview: "redacted",
     base_chart: HEXAGRAM_ROTATION[index % HEXAGRAM_ROTATION.length],
     changed_chart: HEXAGRAM_ROTATION[(index + 3) % HEXAGRAM_ROTATION.length],
     yongshen: YONGSHEN_BY_SCENARIO[scenario],
     evidence_ids: [`case-${String(caseNo).padStart(3, "0")}:${ruleId}:01`, `case-${String(caseNo).padStart(3, "0")}:${companionRule}:02`],
     rule_ids: Array.from(new Set([ruleId, companionRule, "B-YS-001"])),
-    learning_summary: "本案例用于学习取用、证据排序和反证保留，公开展示前已脱敏。",
-    counter_evidence: ["反证用于提示结论边界，不能省略。"],
+    learning_summary: "本案例用于学习取用、证据排序和反证保留，公开展示前已脱敏�?",
+    counter_evidence: ["反证用于提示结论边界，不能省略�?"],
     source_refs: [`V1.5案例种子-${String(caseNo).padStart(2, "0")}`],
     license_note: "编辑自研或已授权脱敏案例",
     created_at: now,
@@ -649,18 +651,18 @@ const CASE_SEEDS: CaseRecord[] = Array.from({ length: 60 }, (_, index) => {
 });
 
 const COURSE_SEEDS: CourseRecord[] = [
-  makeCourseSeed("course-01", "入门课", "beginner", ["article", "quiz", "practice"], ["case-001", "case-007"]),
-  makeCourseSeed("course-02", "装卦课", "beginner", ["article", "case_review", "practice"], ["case-002", "case-008"]),
-  makeCourseSeed("course-03", "用神课", "intermediate", ["article", "quiz", "case_review"], ["case-003", "case-009"]),
+  makeCourseSeed("course-01", "入门�?", "beginner", ["article", "quiz", "practice"], ["case-001", "case-007"]),
+  makeCourseSeed("course-02", "装卦�?", "beginner", ["article", "case_review", "practice"], ["case-002", "case-008"]),
+  makeCourseSeed("course-03", "用神�?", "intermediate", ["article", "quiz", "case_review"], ["case-003", "case-009"]),
   makeCourseSeed("course-04", "证据树课", "intermediate", ["article", "case_review", "practice"], ["case-004", "case-010"]),
-  makeCourseSeed("course-05", "卦例复盘课", "advanced", ["case_review", "quiz", "practice"], ["case-005", "case-011"]),
+  makeCourseSeed("course-05", "卦例复盘�?", "advanced", ["case_review", "quiz", "practice"], ["case-005", "case-011"]),
 ];
 
 const EXPERIMENT_SEEDS: ExperimentRecord[] = [
   makeExperimentSeed("experiment-home-guidance", "home", "首页起卦引导"),
-  makeExperimentSeed("experiment-result-cta", "result", "结果页学习入口"),
-  makeExperimentSeed("experiment-learning-entry", "learning", "知识卡入口"),
-  makeExperimentSeed("experiment-share-card", "share", "分享卡样式"),
+  makeExperimentSeed("experiment-result-cta", "result", "结果页学习入�?"),
+  makeExperimentSeed("experiment-learning-entry", "learning", "知识卡入�?"),
+  makeExperimentSeed("experiment-share-card", "share", "分享卡样�?"),
   makeExperimentSeed("experiment-course-reco", "course", "课程推荐"),
 ];
 
@@ -670,33 +672,40 @@ const RULE_PACK_SEEDS: RulePackRecord[] = [
   makeRulePackSeed("rule-pack-core-dongbian", "Core Dongbian Pack", "dongbian", ["B-DV-001"]),
 ];
 
-export function initReading(rawInput: unknown) {
-  hydrateStore();
+type PrincipalScope = {
+  owner_id?: string;
+};
+
+const DEFAULT_OWNER_ID = "anonymous";
+
+export async function initReading(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input = InitReadingRequestSchema.parse(rawInput);
   const safety = classifyQuestion(input.question);
   const id = `reading_${randomUUID()}`;
   readings.set(id, {
     ...input,
     id,
+    owner_id: scope.owner_id ?? DEFAULT_OWNER_ID,
     safety,
     created_at: new Date().toISOString(),
   });
-  persistStore();
+  await persistStore();
 
   return {
     reading_id: id,
     safety_status: safety,
     rewrite_suggestions:
       safety.status === "allowed"
-        ? ["问题越具体越便于学习排盘，例如补充对象、时间范围和你想观察的重点。"]
+        ? ["?????????????????????????????????"]
         : [safety.notice],
   };
 }
 
-export function castReading(rawInput: unknown) {
-  hydrateStore();
+export async function castReading(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input: CastRequest = CastRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const castTime = input.cast_time ?? toCivilDateString(new Date());
   const dayGanzhi = resolveDayGanzhi({
     dayGanzhi: input.day_ganzhi,
@@ -706,13 +715,18 @@ export function castReading(rawInput: unknown) {
     monthBranch: input.month_branch,
     castTime,
   });
+  const lineValues = input.cast_method === "time" ? deriveTimeCastLines(castTime, dayGanzhi) : input.line_values;
+  if (!lineValues) {
+    throw new Error("line_values must contain exactly six bottom-to-top values");
+  }
   const chart = castChart({
-    lineValues: input.line_values,
+    lineValues,
     dayGanzhi,
   });
   const now = new Date().toISOString();
 
   casts.set(input.reading_id, {
+    owner_id: reading.owner_id,
     reading_id: input.reading_id,
     question_preview: createQuestionPreview(reading.question),
     scenario: reading.scenario,
@@ -728,7 +742,7 @@ export function castReading(rawInput: unknown) {
     updated_at: now,
   });
   deleteAnalysisCache(input.reading_id);
-  persistStore();
+  await persistStore();
 
   return {
     reading_id: input.reading_id,
@@ -741,8 +755,8 @@ export function castReading(rawInput: unknown) {
   };
 }
 
-export function analyzeReading(rawInput: unknown) {
-  hydrateStore();
+export async function analyzeReading(rawInput: unknown) {
+  await hydrateStore();
   const input: AnalyzeRequest = AnalyzeRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
   const cacheKey = getAnalysisCacheKey(input.reading_id, input.mode);
@@ -766,7 +780,7 @@ export function analyzeReading(rawInput: unknown) {
     dateContext: {
       cast_time: cast?.cast_time ?? toCivilDateString(new Date()),
       day_ganzhi: (cast?.day_ganzhi ?? resolveDayGanzhi({})) as DayGanzhi,
-      month_branch: cast?.month_branch ?? "寅",
+      month_branch: cast?.month_branch ?? "子",
       month_source: cast?.month_source ?? "jieqi_table",
     },
   });
@@ -775,16 +789,16 @@ export function analyzeReading(rawInput: unknown) {
     ...analysis,
     updated_at: new Date().toISOString(),
   });
-  persistStore();
+  await persistStore();
 
   return analysis;
 }
 
-export async function explainReading(rawInput: unknown): Promise<AiStreamEvent[]> {
-  hydrateStore();
+export async function explainReading(rawInput: unknown) {
+  await hydrateStore();
   const input: ExplainRequest = ExplainRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
-  const analysis = analyzeReading({
+  const analysis = await analyzeReading({
     reading_id: input.reading_id,
     mode: toAnalyzeMode(input.mode),
     force_refresh: input.force_refresh,
@@ -795,16 +809,17 @@ export async function explainReading(rawInput: unknown): Promise<AiStreamEvent[]
     scenario: reading.scenario,
     mode: input.mode,
     analysis,
+    chart: casts.get(input.reading_id)?.chart_json,
     knowledgeCards,
   });
 }
 
-export async function messageReading(rawInput: unknown): Promise<AiStreamEvent[]> {
-  hydrateStore();
+export async function messageReading(rawInput: unknown) {
+  await hydrateStore();
   const input: MessageRequest = MessageRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
   const safety = classifyQuestion(input.message);
-  appendMessage({
+  await appendMessage({
     reading_id: input.reading_id,
     role: "user",
     content: input.message,
@@ -822,22 +837,23 @@ export async function messageReading(rawInput: unknown): Promise<AiStreamEvent[]
       dateContext: {
         cast_time: casts.get(input.reading_id)?.cast_time ?? toCivilDateString(new Date()),
         day_ganzhi: (casts.get(input.reading_id)?.day_ganzhi ?? resolveDayGanzhi({})) as DayGanzhi,
-        month_branch: casts.get(input.reading_id)?.month_branch ?? "寅",
+        month_branch: casts.get(input.reading_id)?.month_branch ?? "子",
         month_source: casts.get(input.reading_id)?.month_source ?? "jieqi_table",
       },
     });
     const blockedEvents = await explainWithAi({
       question: reading.question,
       scenario: reading.scenario,
-      mode: "learning",
-      analysis: blockedAnalysis,
-      knowledgeCards: [],
-      followup: { message: input.message, type: input.followup_type },
-    });
+    mode: "learning",
+    analysis: blockedAnalysis,
+    chart: casts.get(input.reading_id)?.chart_json,
+    knowledgeCards: [],
+    followup: { message: input.message, type: input.followup_type },
+  });
     return blockedEvents;
   }
 
-  const analysis = analyzeReading({
+  const analysis = await analyzeReading({
     reading_id: input.reading_id,
     mode: input.followup_type === "learning_mode" ? "learning" : "light",
   });
@@ -847,12 +863,13 @@ export async function messageReading(rawInput: unknown): Promise<AiStreamEvent[]
     scenario: reading.scenario,
     mode: input.followup_type === "learning_mode" ? "learning" : "light",
     analysis,
+    chart: casts.get(input.reading_id)?.chart_json,
     knowledgeCards,
     followup: { message: input.message, type: input.followup_type },
   });
   const final = events.find((event) => event.type === "final");
   if (final) {
-    appendMessage({
+    await appendMessage({
       reading_id: input.reading_id,
       role: "assistant",
       content: final.data.summary,
@@ -863,21 +880,21 @@ export async function messageReading(rawInput: unknown): Promise<AiStreamEvent[]
   return events;
 }
 
-export function listReadingMessages(readingId: string): MessageRecord[] {
-  hydrateStore();
+export async function listReadingMessages(readingId: string) {
+  await hydrateStore();
   return messages.get(readingId) ?? [];
 }
 
-export function queryKnowledgeCards(input: {
+export async function queryKnowledgeCards(input: {
   reading_id?: string;
   rule_id?: string;
   term?: string;
   scenario?: InitReadingRequest["scenario"];
   limit?: number;
-}): KnowledgeCard[] {
-  hydrateStore();
+}) {
+  await hydrateStore();
   const analysis = input.reading_id
-    ? analyzeReading({ reading_id: input.reading_id, mode: "learning" })
+    ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" })
     : undefined;
   return searchKnowledgeCards({
     rule_id: input.rule_id,
@@ -888,13 +905,13 @@ export function queryKnowledgeCards(input: {
   }).map(applyKnowledgeStatus).filter((card) => card.status === "approved");
 }
 
-export function listLearningTerms(input: {
+export async function listLearningTerms(input: {
   term?: string;
   rule_id?: string;
   scenario?: InitReadingRequest["scenario"];
   limit?: number;
-} = {}): LearningTerm[] {
-  hydrateStore();
+} = {}) {
+  await hydrateStore();
   const cards = listKnowledgeCardsForLearning({
     term: input.term,
     rule_id: input.rule_id,
@@ -907,38 +924,35 @@ export function listLearningTerms(input: {
     rule_id: card.rule_id,
     scenario: card.scenario,
     definition: card.content,
-    example: `例：在${card.scenario === "通用" ? "通用" : card.scenario}场景中，先把“${card.term}”放回证据树观察。`,
-    counter_example: `反例：不能只凭“${card.term}”一项就给出现实承诺。`,
+    example: `例：�?{card.scenario === "通用" ? "通用" : card.scenario}场景中，先把�?{card.term}”放回证据树观察。`,
+    counter_example: `反例：不能只凭�?{card.term}”一项就给出现实承诺。`,
     source_refs: card.source_refs,
     status: card.status,
   }));
 }
 
-export function getLearningCard(cardId: string): KnowledgeCard & {
-  example: string;
-  counter_example: string;
-  safety_notice: string;
-} {
-  hydrateStore();
+export async function getLearningCard(cardId: string) {
+  await hydrateStore();
   const card = findKnowledgeCard(cardId);
   if (!card || card.status !== "approved") {
     throw new Error(`Knowledge card not found: ${cardId}`);
   }
   return {
     ...card,
-    example: `学习时先看 ${card.rule_id} 的适用条件，再回到卦盘里的对应爻位。`,
-    counter_example: "不要把单张知识卡当成确定预测，也不要脱离反证和安全提示使用。",
-    safety_notice: "本知识卡用于传统文化学习与娱乐体验，不构成现实决策建议。",
+    example: `????? ${card.rule_id} ??????????????????`,
+    counter_example: "??????????????????????????????",
+    safety_notice: "????????????????????????????",
   };
 }
 
-export function listLearningExercises(input: {
+export async function listLearningExercises(input: {
   term?: string;
   rule_id?: string;
+  scenario?: InitReadingRequest["scenario"];
   difficulty?: ExerciseDifficulty;
   limit?: number;
-} = {}): ExerciseSeed[] {
-  hydrateStore();
+} = {}) {
+  await hydrateStore();
   return EXERCISE_SEEDS.map((exercise) => ({ ...exercise, status: exercise.status }))
     .filter((exercise) => exercise.status === "approved")
     .filter((exercise) => !input.difficulty || exercise.difficulty === input.difficulty)
@@ -946,20 +960,21 @@ export function listLearningExercises(input: {
       const card = findKnowledgeCard(exercise.knowledge_card_id);
       if (!card || card.status !== "approved") return false;
       if (input.rule_id && card.rule_id !== input.rule_id) return false;
+      if (input.scenario && card.scenario !== input.scenario && card.scenario !== "通用") return false;
       if (input.term && !`${card.term} ${card.title} ${card.content}`.includes(input.term)) return false;
       return true;
     })
     .slice(0, input.limit ?? 40);
 }
 
-export function updateLearningProgress(rawInput: unknown): LearningProgressRecord {
-  hydrateStore();
+export async function updateLearningProgress(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input = LearningProgressRequestSchema.parse(rawInput);
   const now = new Date().toISOString();
   const record: LearningProgressRecord = {
     ...input,
     id: `progress_${randomUUID()}`,
-    user_id: "anonymous",
+    user_id: scope.owner_id ?? DEFAULT_OWNER_ID,
     updated_at: now,
   };
   learningProgress.set(input.subject_id, record);
@@ -968,14 +983,14 @@ export function updateLearningProgress(rawInput: unknown): LearningProgressRecor
     risk_label: "general",
     detail: input.subject_type,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function favoriteReading(rawInput: unknown): { reading_id: string; favorite: boolean } {
-  hydrateStore();
+export async function favoriteReading(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input: FavoriteRequest = FavoriteRequestSchema.parse(rawInput);
-  ensureReading(input.reading_id);
+  ensureReadingForScope(input.reading_id, scope);
   if (input.favorite) {
     favorites.add(input.reading_id);
   } else {
@@ -986,14 +1001,14 @@ export function favoriteReading(rawInput: unknown): { reading_id: string; favori
     risk_label: "general",
     reading_id: input.reading_id,
   });
-  persistStore();
+  await persistStore();
   return { reading_id: input.reading_id, favorite: input.favorite };
 }
 
-export function updateReadingTags(rawInput: unknown): { reading_id: string; tags: string[] } {
-  hydrateStore();
+export async function updateReadingTags(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input: TagsRequest = TagsRequestSchema.parse(rawInput);
-  ensureReading(input.reading_id);
+  ensureReadingForScope(input.reading_id, scope);
   const tags = Array.from(new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 8);
   readingTags.set(input.reading_id, tags);
   appendAuditLog({
@@ -1001,25 +1016,28 @@ export function updateReadingTags(rawInput: unknown): { reading_id: string; tags
     risk_label: "general",
     reading_id: input.reading_id,
   });
-  persistStore();
+  await persistStore();
   return { reading_id: input.reading_id, tags };
 }
 
-export function getMemberProgress() {
-  hydrateStore();
+export async function getMemberProgress(scope: PrincipalScope = {}) {
+  await hydrateStore();
+  const ownerId = scope.owner_id ?? DEFAULT_OWNER_ID;
   return {
     membership: {
       tier: "free" as const,
       entitlements: ["基础历史", "收藏", "标签", "学习进度"],
     },
-    favorites: Array.from(favorites),
-    tags: Object.fromEntries(readingTags.entries()),
-    learning_progress: Array.from(learningProgress.values()).sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
+    favorites: Array.from(favorites).filter((readingId) => readings.get(readingId)?.owner_id === ownerId),
+    tags: Object.fromEntries(Array.from(readingTags.entries()).filter(([readingId]) => readings.get(readingId)?.owner_id === ownerId)),
+    learning_progress: Array.from(learningProgress.values())
+      .filter((item) => item.user_id === ownerId)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
   };
 }
 
-export function submitFeedback(rawInput: unknown): FeedbackRecord {
-  hydrateStore();
+export async function submitFeedback(rawInput: unknown) {
+  await hydrateStore();
   const input: FeedbackRequest = FeedbackRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
   const record: FeedbackRecord = {
@@ -1034,12 +1052,12 @@ export function submitFeedback(rawInput: unknown): FeedbackRecord {
     reading_id: input.reading_id,
     detail: input.feedback_type,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function createReadingShare(rawInput: unknown): ShareRecord {
-  hydrateStore();
+export async function createReadingShare(rawInput: unknown) {
+  await hydrateStore();
   const input: ShareReadingRequest = ShareReadingRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
   if (reading.safety.status === "blocked") {
@@ -1048,14 +1066,14 @@ export function createReadingShare(rawInput: unknown): ShareRecord {
       risk_label: reading.safety.risk_label,
       reading_id: input.reading_id,
     });
-    persistStore();
+    await persistStore();
     throw new Error("High-risk readings cannot be shared");
   }
   const cast = casts.get(input.reading_id);
   if (!cast) {
     throw new Error(`Cast not found: ${input.reading_id}`);
   }
-  const analysis = analyzeReading({ reading_id: input.reading_id, mode: "learning" });
+  const analysis = await analyzeReading({ reading_id: input.reading_id, mode: "learning" });
   const shareId = `share_${randomUUID()}`;
   const record: ShareRecord = {
     share_id: shareId,
@@ -1083,12 +1101,12 @@ export function createReadingShare(rawInput: unknown): ShareRecord {
     risk_label: reading.safety.risk_label,
     reading_id: input.reading_id,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getPublicShare(shareId: string): Pick<ShareRecord, "share_id" | "share_url" | "visibility" | "card_payload" | "created_at"> {
-  hydrateStore();
+export async function getPublicShare(shareId: string) {
+  await hydrateStore();
   const share = shares.get(shareId);
   if (!share || share.visibility !== "public_anonymous") {
     throw new Error(`Share not found: ${shareId}`);
@@ -1102,8 +1120,8 @@ export function getPublicShare(shareId: string): Pick<ShareRecord, "share_id" | 
   };
 }
 
-export function patchKnowledgeCardStatus(cardId: string, rawInput: unknown): KnowledgeCard {
-  hydrateStore();
+export async function patchKnowledgeCardStatus(cardId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: AdminKnowledgeCardPatch = AdminKnowledgeCardPatchSchema.parse(rawInput);
   const card = findKnowledgeCard(cardId);
   if (!card) {
@@ -1119,22 +1137,22 @@ export function patchKnowledgeCardStatus(cardId: string, rawInput: unknown): Kno
     risk_label: "general",
     detail: `${cardId}:${input.status}`,
   });
-  persistStore();
+  await persistStore();
   return applyKnowledgeStatus(card);
 }
 
-export function listAdminFeedback(): FeedbackRecord[] {
-  hydrateStore();
+export async function listAdminFeedback() {
+  await hydrateStore();
   return Array.from(feedbackRecords.values()).sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-export function listAdminAuditLogs(): AuditLogRecord[] {
-  hydrateStore();
+export async function listAdminAuditLogs() {
+  await hydrateStore();
   return Array.from(auditLogs.values()).sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-export function getAdminMetrics() {
-  hydrateStore();
+export async function getAdminMetrics() {
+  await hydrateStore();
   const blockedReadings = Array.from(readings.values()).filter((reading) => reading.safety.status === "blocked").length;
   return {
     dau: 1,
@@ -1145,7 +1163,7 @@ export function getAdminMetrics() {
     share_count: shares.size,
     favorite_count: favorites.size,
     feedback_count: feedbackRecords.size,
-    safety_block_count: blockedReadings + listAdminAuditLogs().filter((log) => log.action === "share_blocked").length,
+    safety_block_count: blockedReadings + (await listAdminAuditLogs()).filter((log) => log.action === "share_blocked").length,
     rejected_knowledge_cards: Array.from(knowledgeStatusOverrides.values()).filter((item) => item.status === "rejected").length,
     case_count: allCaseRecords().filter((item) => item.status === "approved").length,
     course_count: COURSE_SEEDS.filter((course) => course.status === "published").length,
@@ -1159,10 +1177,10 @@ export function getAdminMetrics() {
     voice_job_count: voiceJobs.size,
     import_count: readingImports.size,
     community_post_count: Array.from(communityPosts.values()).filter((item) => item.status === "published").length,
-    community_review_queue_count: listReviewQueue().length,
-    rule_pack_count: listRulePacks().length,
+    community_review_queue_count: (await listReviewQueue()).length,
+    rule_pack_count: (await listRulePacks()).length,
     ecosystem_submission_count: contributorSubmissions.size,
-    ecosystem_package_count: listEcosystemPackages().length,
+    ecosystem_package_count: (await listEcosystemPackages()).length,
     ecosystem_install_count: Array.from(packageInstalls.values()).filter((item) => item.status === "installed").length,
     ecosystem_suspended_count: Array.from(ecosystemPackages.values()).filter((item) => item.status === "suspended").length,
     simulated_revenue_cents: Array.from(contributorSettlements.values()).reduce((sum, item) => sum + item.total_amount_cents, 0),
@@ -1182,8 +1200,8 @@ export function getAdminMetrics() {
   };
 }
 
-export function listCases(rawInput: Partial<CaseQuery> = {}): CaseRecord[] {
-  hydrateStore();
+export async function listCases(rawInput: Partial<CaseQuery> = {}) {
+  await hydrateStore();
   const input = CaseQuerySchema.parse(rawInput);
   return allCaseRecords()
     .filter((item) => item.status === input.status)
@@ -1196,8 +1214,8 @@ export function listCases(rawInput: Partial<CaseQuery> = {}): CaseRecord[] {
     .slice(0, input.limit);
 }
 
-export function getCase(caseId: string): CaseRecord {
-  hydrateStore();
+export async function getCase(caseId: string) {
+  await hydrateStore();
   const record = findCaseRecord(caseId);
   if (!record || record.status !== "approved") {
     throw new Error(`Case not found: ${caseId}`);
@@ -1205,8 +1223,8 @@ export function getCase(caseId: string): CaseRecord {
   return record;
 }
 
-export function upsertCase(rawInput: unknown): CaseRecord {
-  hydrateStore();
+export async function upsertCase(rawInput: unknown) {
+  await hydrateStore();
   const input: AdminCaseUpsert = AdminCaseUpsertSchema.parse(rawInput);
   const now = new Date().toISOString();
   const existing = input.id ? findCaseRecord(input.id) : undefined;
@@ -1223,12 +1241,12 @@ export function upsertCase(rawInput: unknown): CaseRecord {
     risk_label: "general",
     detail: `${id}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function patchCase(caseId: string, rawInput: unknown): CaseRecord {
-  hydrateStore();
+export async function patchCase(caseId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: AdminCasePatch = AdminCasePatchSchema.parse(rawInput);
   const current = findCaseRecord(caseId);
   if (!current) {
@@ -1246,17 +1264,17 @@ export function patchCase(caseId: string, rawInput: unknown): CaseRecord {
     risk_label: "general",
     detail: `${caseId}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listCourses(): CourseRecord[] {
-  hydrateStore();
+export async function listCourses() {
+  await hydrateStore();
   return COURSE_SEEDS.filter((course) => course.status === "published");
 }
 
-export function getCourse(courseId: string): CourseRecord {
-  hydrateStore();
+export async function getCourse(courseId: string) {
+  await hydrateStore();
   const course = COURSE_SEEDS.find((item) => item.id === courseId);
   if (!course || course.status !== "published") {
     throw new Error(`Course not found: ${courseId}`);
@@ -1264,10 +1282,10 @@ export function getCourse(courseId: string): CourseRecord {
   return course;
 }
 
-export function updateCourseProgress(rawInput: unknown): CourseProgressRecord {
-  hydrateStore();
+export async function updateCourseProgress(rawInput: unknown) {
+  await hydrateStore();
   const input: CourseProgressRequest = CourseProgressRequestSchema.parse(rawInput);
-  const course = getCourse(input.course_id);
+  const course = await getCourse(input.course_id);
   const lesson = course.lessons.find((item) => item.id === input.lesson_id);
   if (!lesson) {
     throw new Error(`Lesson not found: ${input.lesson_id}`);
@@ -1296,14 +1314,14 @@ export function updateCourseProgress(rawInput: unknown): CourseProgressRecord {
     variant: "control",
     created_at: now,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getCourseProgress() {
-  hydrateStore();
+export async function getCourseProgress() {
+  await hydrateStore();
   return {
-    courses: listCourses().map((course) => ({
+    courses: (await listCourses()).map((course) => ({
       id: course.id,
       title: course.title,
       lesson_count: course.lesson_count,
@@ -1314,8 +1332,8 @@ export function getCourseProgress() {
   };
 }
 
-export function createCreatorExport(rawInput: unknown): CreatorExportRecord {
-  hydrateStore();
+export async function createCreatorExport(rawInput: unknown) {
+  await hydrateStore();
   const input: CreatorExportRequest = CreatorExportRequestSchema.parse(rawInput);
   const reading = input.reading_id ? ensureReading(input.reading_id) : undefined;
   if (reading?.safety.status === "blocked") {
@@ -1324,13 +1342,13 @@ export function createCreatorExport(rawInput: unknown): CreatorExportRecord {
       risk_label: reading.safety.risk_label,
       reading_id: reading.id,
     });
-    persistStore();
+    await persistStore();
     throw new Error("High-risk readings cannot be exported");
   }
 
-  const caseRecord = input.case_id ? getCase(input.case_id) : undefined;
+  const caseRecord = input.case_id ? await getCase(input.case_id) : undefined;
   const cast = input.reading_id ? casts.get(input.reading_id) : undefined;
-  const analysis = input.reading_id && cast ? analyzeReading({ reading_id: input.reading_id, mode: "learning" }) : undefined;
+  const analysis = input.reading_id && cast ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" }) : undefined;
   const title = buildCreatorExportTitle(input.export_type, caseRecord, cast);
   const contentSections = buildCreatorExportSections(input.export_type, {
     caseRecord,
@@ -1367,20 +1385,20 @@ export function createCreatorExport(rawInput: unknown): CreatorExportRecord {
     variant: "control",
     created_at: now,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function createCreatorScript(rawInput: unknown): CreatorExportRecord {
+export async function createCreatorScript(rawInput: unknown) {
   const input = CreatorExportRequestSchema.parse(rawInput);
-  return createCreatorExport({
+  return await createCreatorExport({
     ...input,
     export_type: "short_video_script",
   });
 }
 
-export function getCreatorExport(exportId: string): CreatorExportRecord {
-  hydrateStore();
+export async function getCreatorExport(exportId: string) {
+  await hydrateStore();
   const record = creatorExports.get(exportId);
   if (!record) {
     throw new Error(`Creator export not found: ${exportId}`);
@@ -1388,8 +1406,8 @@ export function getCreatorExport(exportId: string): CreatorExportRecord {
   return record;
 }
 
-export function assignExperiment(rawInput: unknown): ExperimentAssignment {
-  hydrateStore();
+export async function assignExperiment(rawInput: unknown) {
+  await hydrateStore();
   const input: ExperimentAssignmentQuery = ExperimentAssignmentQuerySchema.parse(rawInput);
   const experiment = findExperimentBySurface(input.surface);
   if (!experiment || experiment.status !== "running") {
@@ -1410,8 +1428,8 @@ export function assignExperiment(rawInput: unknown): ExperimentAssignment {
   };
 }
 
-export function recordEvent(rawInput: unknown): EventRecord {
-  hydrateStore();
+export async function recordEvent(rawInput: unknown) {
+  await hydrateStore();
   const input: EventRequest = EventRequestSchema.parse(rawInput);
   const record: EventRecord = {
     ...input,
@@ -1424,17 +1442,17 @@ export function recordEvent(rawInput: unknown): EventRecord {
     risk_label: "general",
     detail: `${record.event_name}:${record.surface}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listAdminExperiments(): ExperimentRecord[] {
-  hydrateStore();
+export async function listAdminExperiments() {
+  await hydrateStore();
   return allExperiments();
 }
 
-export function patchExperiment(experimentId: string, rawInput: unknown): ExperimentRecord {
-  hydrateStore();
+export async function patchExperiment(experimentId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: AdminExperimentPatch = AdminExperimentPatchSchema.parse(rawInput);
   const current = findExperimentRecord(experimentId);
   if (!current) {
@@ -1452,12 +1470,12 @@ export function patchExperiment(experimentId: string, rawInput: unknown): Experi
     risk_label: "general",
     detail: `${experimentId}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function registerDevice(rawInput: unknown): DeviceRecord {
-  hydrateStore();
+export async function registerDevice(rawInput: unknown) {
+  await hydrateStore();
   const input: DeviceRegisterRequest = DeviceRegisterRequestSchema.parse(rawInput);
   const deviceId = `device_${randomUUID()}`;
   const record: DeviceRecord = {
@@ -1473,12 +1491,12 @@ export function registerDevice(rawInput: unknown): DeviceRecord {
     risk_label: "general",
     detail: input.platform,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function updatePushSettings(rawInput: unknown): PushSettingsRecord {
-  hydrateStore();
+export async function updatePushSettings(rawInput: unknown) {
+  await hydrateStore();
   const input: PushSettingsRequest = PushSettingsRequestSchema.parse(rawInput);
   if (!devices.has(input.device_id)) {
     throw new Error(`Device not found: ${input.device_id}`);
@@ -1493,12 +1511,12 @@ export function updatePushSettings(rawInput: unknown): PushSettingsRecord {
     risk_label: "general",
     detail: input.device_id,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getAppBootstrap(input: { platform: ClientPlatform; anonymous_id: string }) {
-  hydrateStore();
+export async function getAppBootstrap(input: { platform: ClientPlatform; anonymous_id: string }) {
+  await hydrateStore();
   return {
     platform: input.platform,
     anonymous_id: input.anonymous_id,
@@ -1513,14 +1531,14 @@ export function getAppBootstrap(input: { platform: ClientPlatform; anonymous_id:
     },
     capabilities: getPlatformCapabilities(input.platform),
     copy: {
-      safety_notice: "本工具用于传统文化学习与娱乐互动，不提供现实决策承诺。",
-      privacy_notice: "语音、社区与导入内容默认走脱敏和审核流程。",
+      safety_notice: "???????????????????????????",
+      privacy_notice: "?????????????????????",
     },
   };
 }
 
-export function transcribeVoice(rawInput: unknown): VoiceJobRecord {
-  hydrateStore();
+export async function transcribeVoice(rawInput: unknown) {
+  await hydrateStore();
   const input: VoiceTranscribeRequest = VoiceTranscribeRequestSchema.parse(rawInput);
   const safety = classifyQuestion(input.audio_text);
   const record: VoiceJobRecord = {
@@ -1538,12 +1556,12 @@ export function transcribeVoice(rawInput: unknown): VoiceJobRecord {
     action: record.status === "blocked" ? "voice_transcribe_blocked" : "voice_transcribed",
     risk_label: safety.risk_label,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export async function voiceExplainReading(rawInput: unknown): Promise<VoiceJobRecord> {
-  hydrateStore();
+export async function voiceExplainReading(rawInput: unknown) {
+  await hydrateStore();
   const input: VoiceExplainRequest = VoiceExplainRequestSchema.parse(rawInput);
   const reading = ensureReading(input.reading_id);
   const record: VoiceJobRecord = {
@@ -1566,12 +1584,12 @@ export async function voiceExplainReading(rawInput: unknown): Promise<VoiceJobRe
     reading_id: input.reading_id,
     detail: input.voice,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getVoiceJob(jobId: string): VoiceJobRecord {
-  hydrateStore();
+export async function getVoiceJob(jobId: string) {
+  await hydrateStore();
   const record = voiceJobs.get(jobId);
   if (!record) {
     throw new Error(`Voice job not found: ${jobId}`);
@@ -1579,27 +1597,27 @@ export function getVoiceJob(jobId: string): VoiceJobRecord {
   return record;
 }
 
-export function previewReadingImport(rawInput: unknown): ReadingImportRecord {
-  hydrateStore();
+export async function previewReadingImport(rawInput: unknown) {
+  await hydrateStore();
   const input: ReadingImportPreviewRequest = ReadingImportPreviewRequestSchema.parse(rawInput);
   const parsed = normalizeImportPayload(input.source_type, input.payload);
   const errors = getImportErrors(parsed);
   return {
     import_id: `import_preview_${randomUUID()}`,
     source_type: input.source_type,
-    status: errors.length === 0 ? "parsed" : "needs_review",
+    status: errors.length === 0 ? ("parsed" as const) : ("needs_review" as const),
     editable_fields: parsed,
     errors,
-    ai_generated_chart_fields: false,
+    ai_generated_chart_fields: false as const,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 }
 
-export function createReadingImport(rawInput: unknown): ReadingImportRecord {
-  hydrateStore();
+export async function createReadingImport(rawInput: unknown) {
+  await hydrateStore();
   const input: ReadingImportRequest = ReadingImportRequestSchema.parse(rawInput);
-  const preview = previewReadingImport(input);
+  const preview = await previewReadingImport(input);
   const now = new Date().toISOString();
   const record: ReadingImportRecord = {
     ...preview,
@@ -1608,12 +1626,12 @@ export function createReadingImport(rawInput: unknown): ReadingImportRecord {
     updated_at: now,
   };
   if (record.status === "parsed") {
-    const reading = initReading({
+    const reading = await initReading({
       question: record.editable_fields.question ?? "导入卦例复盘",
       scenario: record.editable_fields.scenario ?? CASE_SCENARIOS[0],
       timezone: "Asia/Shanghai",
     });
-    const cast = castReading({
+    const cast = await castReading({
       reading_id: reading.reading_id,
       cast_method: "manual",
       line_values: record.editable_fields.line_values,
@@ -1634,12 +1652,12 @@ export function createReadingImport(rawInput: unknown): ReadingImportRecord {
     risk_label: "general",
     detail: input.source_type,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function patchReadingImport(importId: string, rawInput: unknown): ReadingImportRecord {
-  hydrateStore();
+export async function patchReadingImport(importId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: ReadingImportPatch = ReadingImportPatchSchema.parse(rawInput);
   const current = readingImports.get(importId);
   if (!current) {
@@ -1660,12 +1678,12 @@ export function patchReadingImport(importId: string, rawInput: unknown): Reading
     risk_label: "general",
     detail: `${importId}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getReadingImport(importId: string): ReadingImportRecord {
-  hydrateStore();
+export async function getReadingImport(importId: string) {
+  await hydrateStore();
   const record = readingImports.get(importId);
   if (!record) {
     throw new Error(`Reading import not found: ${importId}`);
@@ -1673,8 +1691,8 @@ export function getReadingImport(importId: string): ReadingImportRecord {
   return record;
 }
 
-export function createCommunityPost(rawInput: unknown): CommunityPostRecord {
-  hydrateStore();
+export async function createCommunityPost(rawInput: unknown) {
+  await hydrateStore();
   const input: CommunityPostRequest = CommunityPostRequestSchema.parse(rawInput);
   const reading = input.reading_id ? ensureReading(input.reading_id) : undefined;
   if (reading?.safety.status === "blocked" || classifyQuestion(`${input.title} ${input.body}`).status === "blocked") {
@@ -1683,7 +1701,7 @@ export function createCommunityPost(rawInput: unknown): CommunityPostRecord {
       risk_label: reading?.safety.risk_label ?? classifyQuestion(`${input.title} ${input.body}`).risk_label,
       reading_id: input.reading_id,
     });
-    persistStore();
+    await persistStore();
     throw new Error("High-risk readings cannot be published");
   }
   const now = new Date().toISOString();
@@ -1692,7 +1710,7 @@ export function createCommunityPost(rawInput: unknown): CommunityPostRecord {
     id: `post_${randomUUID()}`,
     status: "pending_review",
     author_label: "anonymous",
-    question_preview: input.reading_id ? "问题已脱敏" : "",
+    question_preview: input.reading_id ? "redacted" : "",
     created_at: now,
     updated_at: now,
   };
@@ -1702,19 +1720,19 @@ export function createCommunityPost(rawInput: unknown): CommunityPostRecord {
     risk_label: "general",
     reading_id: input.reading_id,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listCommunityPosts(): CommunityPostRecord[] {
-  hydrateStore();
+export async function listCommunityPosts() {
+  await hydrateStore();
   return Array.from(communityPosts.values())
     .filter((item) => item.status === "published")
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
-export function getCommunityPost(postId: string): CommunityPostRecord {
-  hydrateStore();
+export async function getCommunityPost(postId: string) {
+  await hydrateStore();
   const record = communityPosts.get(postId);
   if (!record || !["published", "hidden"].includes(record.status)) {
     throw new Error(`Community post not found: ${postId}`);
@@ -1722,8 +1740,8 @@ export function getCommunityPost(postId: string): CommunityPostRecord {
   return record;
 }
 
-export function createCommunityComment(rawInput: unknown): CommunityCommentRecord {
-  hydrateStore();
+export async function createCommunityComment(rawInput: unknown) {
+  await hydrateStore();
   const input: CommunityCommentRequest = CommunityCommentRequestSchema.parse(rawInput);
   const post = communityPosts.get(input.post_id);
   if (!post || post.status !== "published") {
@@ -1744,12 +1762,12 @@ export function createCommunityComment(rawInput: unknown): CommunityCommentRecor
     risk_label: safety.risk_label,
     detail: input.post_id,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function reportCommunityContent(rawInput: unknown): CommunityReportRecord {
-  hydrateStore();
+export async function reportCommunityContent(rawInput: unknown) {
+  await hydrateStore();
   const input: CommunityReportRequest = CommunityReportRequestSchema.parse(rawInput);
   const record: CommunityReportRecord = {
     ...input,
@@ -1763,17 +1781,17 @@ export function reportCommunityContent(rawInput: unknown): CommunityReportRecord
     risk_label: "general",
     detail: `${input.target_type}:${input.target_id}:${input.reason}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listRulePacks(): RulePackRecord[] {
-  hydrateStore();
+export async function listRulePacks() {
+  await hydrateStore();
   return allRulePacks().filter((item) => item.status === "approved");
 }
 
-export function getRulePack(rulePackId: string): RulePackRecord {
-  hydrateStore();
+export async function getRulePack(rulePackId: string) {
+  await hydrateStore();
   const record = findRulePackRecord(rulePackId);
   if (!record || record.status !== "approved") {
     throw new Error(`Rule pack not found: ${rulePackId}`);
@@ -1781,8 +1799,8 @@ export function getRulePack(rulePackId: string): RulePackRecord {
   return record;
 }
 
-export function upsertRulePack(rawInput: unknown): RulePackRecord {
-  hydrateStore();
+export async function upsertRulePack(rawInput: unknown) {
+  await hydrateStore();
   const input: RulePackUpsert = RulePackUpsertSchema.parse(rawInput);
   const now = new Date().toISOString();
   const existing = input.id ? findRulePackRecord(input.id) : undefined;
@@ -1806,12 +1824,12 @@ export function upsertRulePack(rawInput: unknown): RulePackRecord {
     risk_label: "general",
     detail: `${id}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function patchRulePack(rulePackId: string, rawInput: unknown): RulePackRecord {
-  hydrateStore();
+export async function patchRulePack(rulePackId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: RulePackPatch = RulePackPatchSchema.parse(rawInput);
   const current = findRulePackRecord(rulePackId);
   if (!current) {
@@ -1840,12 +1858,12 @@ export function patchRulePack(rulePackId: string, rawInput: unknown): RulePackRe
     risk_label: "general",
     detail: `${rulePackId}:${record.status}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function createAdminReview(rawInput: unknown): AdminReviewRecord {
-  hydrateStore();
+export async function createAdminReview(rawInput: unknown) {
+  await hydrateStore();
   const input: AdminReviewRequest = AdminReviewRequestSchema.parse(rawInput);
   const record: AdminReviewRecord = {
     ...input,
@@ -1859,21 +1877,21 @@ export function createAdminReview(rawInput: unknown): AdminReviewRecord {
     risk_label: "general",
     detail: `${input.target_type}:${input.target_id}:${input.review_type}:${input.decision}`,
   });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listReviewQueue(): Array<AdminReviewRecord | CommunityReportRecord | CommunityPostRecord> {
-  hydrateStore();
+export async function listReviewQueue() {
+  await hydrateStore();
   const queuedPosts = Array.from(communityPosts.values()).filter((item) => item.status === "pending_review");
   const queuedReports = Array.from(communityReports.values()).filter((item) => item.status === "pending_review");
   const rejectedReviews = Array.from(adminReviews.values()).filter((item) => item.decision === "rejected");
   return [...queuedPosts, ...queuedReports, ...rejectedReviews];
 }
 
-export function getContributorDashboard() {
-  hydrateStore();
-  const submissions = listContributorSubmissions();
+export async function getContributorDashboard() {
+  await hydrateStore();
+  const submissions = await listContributorSubmissions();
   return {
     contributor_id: DEFAULT_CONTRIBUTOR_ID,
     roles: DEFAULT_CONTRIBUTOR_ROLES,
@@ -1885,12 +1903,12 @@ export function getContributorDashboard() {
   };
 }
 
-export function createContributorSubmission(rawInput: unknown): ContributorSubmissionRecord {
-  hydrateStore();
+export async function createContributorSubmission(rawInput: unknown) {
+  await hydrateStore();
   const input: ContributorSubmissionRequest = ContributorSubmissionRequestSchema.parse(rawInput);
   assertSafeEcosystemPayload(input.title, input.payload);
   const now = new Date().toISOString();
-  const target = createSubmissionTarget(input);
+  const target = await createSubmissionTarget(input);
   const record: ContributorSubmissionRecord = {
     ...input,
     id: `submission_${randomUUID()}`,
@@ -1908,19 +1926,19 @@ export function createContributorSubmission(rawInput: unknown): ContributorSubmi
   };
   contributorSubmissions.set(record.id, record);
   appendAuditLog({ action: "contributor_submission_created", risk_label: "general", detail: `${record.id}:${record.submission_type}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listContributorSubmissions(): ContributorSubmissionRecord[] {
-  hydrateStore();
+export async function listContributorSubmissions() {
+  await hydrateStore();
   return Array.from(contributorSubmissions.values())
     .filter((item) => item.contributor_id === DEFAULT_CONTRIBUTOR_ID)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
-export function getSubmission(submissionId: string): ContributorSubmissionRecord {
-  hydrateStore();
+export async function getSubmission(submissionId: string) {
+  await hydrateStore();
   const record = contributorSubmissions.get(submissionId);
   if (!record) {
     throw new Error(`Submission not found: ${submissionId}`);
@@ -1928,10 +1946,10 @@ export function getSubmission(submissionId: string): ContributorSubmissionRecord
   return record;
 }
 
-export function patchContributorSubmission(submissionId: string, rawInput: unknown): ContributorSubmissionRecord {
-  hydrateStore();
+export async function patchContributorSubmission(submissionId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: ContributorSubmissionPatch = ContributorSubmissionPatchSchema.parse(rawInput);
-  const current = getSubmission(submissionId);
+  const current = await getSubmission(submissionId);
   if (!["draft", "changes_requested"].includes(current.status)) {
     throw new Error("Only draft or changes_requested submissions can be edited");
   }
@@ -1946,21 +1964,21 @@ export function patchContributorSubmission(submissionId: string, rawInput: unkno
     diff_summary: buildSubmissionDiffSummary(current, patch),
     updated_at: new Date().toISOString(),
   };
-  const target = createSubmissionTarget(next);
+  const target = await createSubmissionTarget(next);
   next.target_id = target?.id ?? next.target_id;
   contributorSubmissions.set(submissionId, next);
   appendAuditLog({ action: "contributor_submission_patched", risk_label: "general", detail: `${submissionId}:v${next.version}` });
-  persistStore();
+  await persistStore();
   return next;
 }
 
-export function submitContributorSubmission(submissionId: string, rawInput: unknown): ContributorSubmissionRecord {
-  hydrateStore();
+export async function submitContributorSubmission(submissionId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: ContributorSubmissionSubmit = ContributorSubmissionSubmitSchema.parse(rawInput);
   if (!input.confirm_controlled_opening) {
     throw new Error("Controlled opening confirmation is required");
   }
-  const current = getSubmission(submissionId);
+  const current = await getSubmission(submissionId);
   if (!["draft", "changes_requested"].includes(current.status)) {
     throw new Error("Only draft or changes_requested submissions can be submitted");
   }
@@ -1978,21 +1996,21 @@ export function submitContributorSubmission(submissionId: string, rawInput: unkn
   };
   contributorSubmissions.set(submissionId, next);
   appendAuditLog({ action: "contributor_submission_submitted", risk_label: "general", detail: submissionId });
-  persistStore();
+  await persistStore();
   return next;
 }
 
-export function listAdminSubmissions(): ContributorSubmissionRecord[] {
-  hydrateStore();
+export async function listAdminSubmissions() {
+  await hydrateStore();
   return Array.from(contributorSubmissions.values())
     .filter((item) => ["submitted", "in_review", "changes_requested", "approved"].includes(item.status))
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
-export function reviewContributorSubmission(submissionId: string, rawInput: unknown): ContributorSubmissionRecord {
-  hydrateStore();
+export async function reviewContributorSubmission(submissionId: string, rawInput: unknown) {
+  await hydrateStore();
   const review: AdminSubmissionReviewRequest = AdminSubmissionReviewRequestSchema.parse(rawInput);
-  const current = getSubmission(submissionId);
+  const current = await getSubmission(submissionId);
   if (!["in_review", "changes_requested"].includes(current.status)) {
     throw new Error("Submission is not reviewable");
   }
@@ -2009,18 +2027,18 @@ export function reviewContributorSubmission(submissionId: string, rawInput: unkn
   contributorSubmissions.set(submissionId, next);
   syncRulePackReviewGates(next);
   appendAuditLog({ action: "contributor_submission_reviewed", risk_label: "general", detail: `${submissionId}:${review.review_gate}:${review.decision}` });
-  persistStore();
+  await persistStore();
   return next;
 }
 
-export function approveRulePackSubmissionForTests(submissionId: string): ContributorSubmissionRecord {
-  reviewContributorSubmission(submissionId, { review_gate: "professional", decision: "approved", note: "test professional gate" });
-  reviewContributorSubmission(submissionId, { review_gate: "compliance", decision: "approved", note: "test compliance gate" });
-  return reviewContributorSubmission(submissionId, { review_gate: "safety", decision: "approved", note: "test safety gate" });
+export async function approveRulePackSubmissionForTests(submissionId: string) {
+  await reviewContributorSubmission(submissionId, { review_gate: "professional", decision: "approved", note: "test professional gate" });
+  await reviewContributorSubmission(submissionId, { review_gate: "compliance", decision: "approved", note: "test compliance gate" });
+  return await reviewContributorSubmission(submissionId, { review_gate: "safety", decision: "approved", note: "test safety gate" });
 }
 
-export function runRulePackRegression(rulePackId: string, rawInput: unknown): RulePackRegressionRecord {
-  hydrateStore();
+export async function runRulePackRegression(rulePackId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: RulePackRegressionRequest = RulePackRegressionRequestSchema.parse(rawInput);
   const pack = findRulePackRecord(rulePackId);
   if (!pack) {
@@ -2060,12 +2078,12 @@ export function runRulePackRegression(rulePackId: string, rawInput: unknown): Ru
     contributorSubmissions.set(submission.id, nextSubmission);
   }
   appendAuditLog({ action: "rule_pack_regression_completed", risk_label: "general", detail: `${rulePackId}:${record.status}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function publishRulePackToEcosystem(rulePackId: string, rawInput: unknown): EcosystemPackageRecord {
-  hydrateStore();
+export async function publishRulePackToEcosystem(rulePackId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: RulePackPublishRequest = RulePackPublishRequestSchema.parse(rawInput);
   const pack = findRulePackRecord(rulePackId);
   if (!pack || !isRulePackReadyForEcosystemPublish(pack)) {
@@ -2110,12 +2128,12 @@ export function publishRulePackToEcosystem(rulePackId: string, rawInput: unknown
   ecosystemPackages.set(packageId, record);
   ecosystemQualityReviews.set(packageId, makeDefaultQualityRecord(record, now));
   appendAuditLog({ action: "ecosystem_package_published", risk_label: "general", detail: `${packageId}:${rulePackId}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function rollbackRulePackVersion(rulePackId: string, rawInput: unknown): RulePackRecord {
-  hydrateStore();
+export async function rollbackRulePackVersion(rulePackId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: RulePackRollbackRequest = RulePackRollbackRequestSchema.parse(rawInput);
   const pack = findRulePackRecord(rulePackId);
   if (!pack) {
@@ -2134,19 +2152,19 @@ export function rollbackRulePackVersion(rulePackId: string, rawInput: unknown): 
     ecosystemPackages.set(pkg.id, { ...pkg, status: "deprecated", updated_at: now });
   }
   appendAuditLog({ action: "rule_pack_rollback_completed", risk_label: "general", detail: `${rulePackId}:v${input.target_version}:${input.reason}` });
-  persistStore();
+  await persistStore();
   return next;
 }
 
-export function listEcosystemPackages(): EcosystemPackageRecord[] {
-  hydrateStore();
+export async function listEcosystemPackages() {
+  await hydrateStore();
   return Array.from(ecosystemPackages.values())
     .filter((item) => item.status === "published" && getPackageQualityStatus(item.id) === "healthy")
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
-export function getEcosystemPackage(packageId: string): EcosystemPackageRecord {
-  hydrateStore();
+export async function getEcosystemPackage(packageId: string) {
+  await hydrateStore();
   const record = ecosystemPackages.get(packageId);
   if (!record || !["published", "suspended", "deprecated"].includes(record.status)) {
     throw new Error(`Ecosystem package not found: ${packageId}`);
@@ -2154,10 +2172,10 @@ export function getEcosystemPackage(packageId: string): EcosystemPackageRecord {
   return record;
 }
 
-export function installEcosystemPackage(rawInput: unknown): PackageInstallRecord {
-  hydrateStore();
+export async function installEcosystemPackage(rawInput: unknown) {
+  await hydrateStore();
   const input: EcosystemPackageInstallRequest = EcosystemPackageInstallRequestSchema.parse(rawInput);
-  const pkg = getEcosystemPackage(input.package_id);
+  const pkg = await getEcosystemPackage(input.package_id);
   if (pkg.status !== "published") {
     throw new Error("Only published ecosystem packages can be installed");
   }
@@ -2181,12 +2199,12 @@ export function installEcosystemPackage(rawInput: unknown): PackageInstallRecord
     appendSettlementLedgerEvent(pkg, "package_installed", 250);
   }
   appendAuditLog({ action: "ecosystem_package_installed", risk_label: "general", detail: input.package_id });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function disableEcosystemPackage(rawInput: unknown): PackageInstallRecord {
-  hydrateStore();
+export async function disableEcosystemPackage(rawInput: unknown) {
+  await hydrateStore();
   const input: EcosystemPackageDisableRequest = EcosystemPackageDisableRequestSchema.parse(rawInput);
   const installKey = `anonymous:${input.package_id}`;
   const existing = packageInstalls.get(installKey);
@@ -2200,12 +2218,12 @@ export function disableEcosystemPackage(rawInput: unknown): PackageInstallRecord
   };
   packageInstalls.set(installKey, record);
   appendAuditLog({ action: "ecosystem_package_disabled", risk_label: "general", detail: input.package_id });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function suspendEcosystemPackage(packageId: string, rawInput: unknown): EcosystemPackageRecord {
-  hydrateStore();
+export async function suspendEcosystemPackage(packageId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: EcosystemPackageSuspendRequest = EcosystemPackageSuspendRequestSchema.parse(rawInput);
   const pkg = ecosystemPackages.get(packageId);
   if (!pkg) {
@@ -2219,12 +2237,12 @@ export function suspendEcosystemPackage(packageId: string, rawInput: unknown): E
   };
   ecosystemPackages.set(packageId, record);
   appendAuditLog({ action: "ecosystem_package_suspended", risk_label: "general", detail: `${packageId}:${input.reason}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function simulateContributorSettlements(rawInput: unknown): ContributorSettlementRecord {
-  hydrateStore();
+export async function simulateContributorSettlements(rawInput: unknown) {
+  await hydrateStore();
   const input: SettlementSimulateRequest = SettlementSimulateRequestSchema.parse(rawInput);
   const eventsForPeriod = Array.from(settlementLedger.values()).filter(
     (event) => event.contributor_id === input.contributor_id && event.created_at.startsWith(input.period),
@@ -2242,23 +2260,23 @@ export function simulateContributorSettlements(rawInput: unknown): ContributorSe
   };
   contributorSettlements.set(record.id, record);
   appendAuditLog({ action: "simulated_settlement_calculated", risk_label: "general", detail: `${record.id}:${record.total_amount_cents}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getContributorSettlementList(): ContributorSettlementRecord[] {
-  hydrateStore();
+export async function getContributorSettlementList() {
+  await hydrateStore();
   return Array.from(contributorSettlements.values())
     .filter((item) => item.contributor_id === DEFAULT_CONTRIBUTOR_ID)
     .sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-export function getEcosystemMetrics() {
-  hydrateStore();
+export async function getEcosystemMetrics() {
+  await hydrateStore();
   const submissions = Array.from(contributorSubmissions.values());
   const regressions = Array.from(rulePackRegressions.values());
   const regressionFailures = regressions.filter((item) => item.status === "failed").length;
-  const publishedPackages = listEcosystemPackages();
+  const publishedPackages = await listEcosystemPackages();
   const activeInstalls = Array.from(packageInstalls.values()).filter((item) => item.status === "installed");
   const contentRevisitEvents = Array.from(events.values()).filter((event) => event.event_name === "case_opened");
   const learningCompletions =
@@ -2296,8 +2314,8 @@ export function getEcosystemMetrics() {
   };
 }
 
-export function getEcosystemQuality() {
-  hydrateStore();
+export async function getEcosystemQuality() {
+  await hydrateStore();
   const packages = Array.from(ecosystemPackages.values()).map((pkg) => ecosystemQualityReviews.get(pkg.id) ?? makeDefaultQualityRecord(pkg, pkg.updated_at));
   return {
     packages: packages.sort((left, right) => right.reviewed_at.localeCompare(left.reviewed_at)),
@@ -2308,8 +2326,8 @@ export function getEcosystemQuality() {
   };
 }
 
-export function reviewEcosystemPackageQuality(packageId: string, rawInput: unknown): EcosystemQualityRecord {
-  hydrateStore();
+export async function reviewEcosystemPackageQuality(packageId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: EcosystemQualityReviewRequest = EcosystemQualityReviewRequestSchema.parse(rawInput);
   assertNoCommitmentWording(input.note);
   const pkg = ecosystemPackages.get(packageId);
@@ -2361,17 +2379,17 @@ export function reviewEcosystemPackageQuality(packageId: string, rawInput: unkno
     });
   }
   appendAuditLog({ action: "ecosystem_quality_reviewed", risk_label: input.risk_level, detail: `${packageId}:${input.status}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listEcosystemRiskEvents(): EcosystemRiskEventRecord[] {
-  hydrateStore();
+export async function listEcosystemRiskEvents() {
+  await hydrateStore();
   return Array.from(ecosystemRiskEvents.values()).sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-export function resolveEcosystemRiskEvent(riskEventId: string, rawInput: unknown): EcosystemRiskEventRecord {
-  hydrateStore();
+export async function resolveEcosystemRiskEvent(riskEventId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: EcosystemRiskEventResolveRequest = EcosystemRiskEventResolveRequestSchema.parse(rawInput);
   const current = ecosystemRiskEvents.get(riskEventId);
   if (!current) {
@@ -2386,13 +2404,13 @@ export function resolveEcosystemRiskEvent(riskEventId: string, rawInput: unknown
   };
   ecosystemRiskEvents.set(riskEventId, record);
   appendAuditLog({ action: "ecosystem_risk_event_resolved", risk_label: record.risk_level, detail: `${riskEventId}:${input.action}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getOpsSlo() {
-  hydrateStore();
-  const metrics = getAdminMetrics();
+export async function getOpsSlo() {
+  await hydrateStore();
+  const metrics = await getAdminMetrics();
   return {
     targets: {
       cast_p95_ms: 500,
@@ -2410,13 +2428,13 @@ export function getOpsSlo() {
   };
 }
 
-export function listOpsIncidents(): OpsIncidentRecord[] {
-  hydrateStore();
+export async function listOpsIncidents() {
+  await hydrateStore();
   return Array.from(opsIncidents.values()).sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 }
 
-export function createOpsIncident(rawInput: unknown): OpsIncidentRecord {
-  hydrateStore();
+export async function createOpsIncident(rawInput: unknown) {
+  await hydrateStore();
   const input: OpsIncidentRequest = OpsIncidentRequestSchema.parse(rawInput);
   const now = new Date().toISOString();
   const record: OpsIncidentRecord = {
@@ -2428,12 +2446,12 @@ export function createOpsIncident(rawInput: unknown): OpsIncidentRecord {
   };
   opsIncidents.set(record.id, record);
   appendAuditLog({ action: "ops_incident_created", risk_label: input.severity, detail: `${record.id}:${input.affected_surface}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function patchOpsIncident(incidentId: string, rawInput: unknown): OpsIncidentRecord {
-  hydrateStore();
+export async function patchOpsIncident(incidentId: string, rawInput: unknown) {
+  await hydrateStore();
   const patch: OpsIncidentPatch = OpsIncidentPatchSchema.parse(rawInput);
   const current = opsIncidents.get(incidentId);
   if (!current) {
@@ -2449,12 +2467,12 @@ export function patchOpsIncident(incidentId: string, rawInput: unknown): OpsInci
   };
   opsIncidents.set(incidentId, record);
   appendAuditLog({ action: "ops_incident_updated", risk_label: current.severity, detail: `${incidentId}:${record.status}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getCommercialReadiness() {
-  hydrateStore();
+export async function getCommercialReadiness() {
+  await hydrateStore();
   const gates: CommercialReadinessGateRecord[] = [
     { gate: "entitlement", status: "ready", evidence: "learning and archive entitlements are modeled" },
     { gate: "billing_sandbox", status: "ready", evidence: "simulated billing preview is available" },
@@ -2471,8 +2489,8 @@ export function getCommercialReadiness() {
   };
 }
 
-export function simulateCommercialBilling(rawInput: unknown): CommercialBillingSimulationRecord {
-  hydrateStore();
+export async function simulateCommercialBilling(rawInput: unknown) {
+  await hydrateStore();
   const input: CommercialBillingSimulationRequest = CommercialBillingSimulationRequestSchema.parse(rawInput);
   const eventsForPeriod = Array.from(settlementLedger.values()).filter(
     (event) => event.contributor_id === input.contributor_id && event.created_at.startsWith(input.period),
@@ -2502,12 +2520,12 @@ export function simulateCommercialBilling(rawInput: unknown): CommercialBillingS
   };
   commercialBillingSimulations.set(record.id, record);
   appendAuditLog({ action: "commercial_billing_simulated", risk_label: "general", detail: `${record.id}:${record.total_amount_cents}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function getContributorRevenuePreview() {
-  hydrateStore();
+export async function getContributorRevenuePreview() {
+  await hydrateStore();
   const simulations = Array.from(commercialBillingSimulations.values()).filter((item) => item.contributor_id === DEFAULT_CONTRIBUTOR_ID);
   const ledgerEvents = Array.from(settlementLedger.values()).filter((item) => item.contributor_id === DEFAULT_CONTRIBUTOR_ID);
   const totalFromSimulations = simulations.reduce((sum, item) => sum + item.total_amount_cents, 0);
@@ -2522,28 +2540,28 @@ export function getContributorRevenuePreview() {
   };
 }
 
-export function getPrivacySettings(): UserPrivacySettingsRecord {
-  hydrateStore();
-  return privacySettings.get("anonymous") ?? makeDefaultPrivacySettings();
+export async function getPrivacySettings(scope: PrincipalScope = {}) {
+  await hydrateStore();
+  return privacySettings.get(scope.owner_id ?? DEFAULT_OWNER_ID) ?? makeDefaultPrivacySettings(scope.owner_id ?? DEFAULT_OWNER_ID);
 }
 
-export function updatePrivacySettings(rawInput: unknown): UserPrivacySettingsRecord {
-  hydrateStore();
+export async function updatePrivacySettings(rawInput: unknown, scope: PrincipalScope = {}) {
+  await hydrateStore();
   const input: PrivacySettingsRequest = PrivacySettingsRequestSchema.parse(rawInput);
   const record: UserPrivacySettingsRecord = {
     ...input,
-    user_id: "anonymous",
+    user_id: scope.owner_id ?? DEFAULT_OWNER_ID,
     updated_at: new Date().toISOString(),
   };
   privacySettings.set(record.user_id, record);
   appendAuditLog({ action: "privacy_settings_updated", risk_label: "privacy", detail: `retain:${record.retain_history_days}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function requestPrivacyDataExport(): PrivacyDataExportRecord {
-  hydrateStore();
-  const settings = getPrivacySettings();
+export async function requestPrivacyDataExport(scope: PrincipalScope = {}) {
+  await hydrateStore();
+  const settings = await getPrivacySettings(scope);
   const now = new Date().toISOString();
   const record: PrivacyDataExportRecord = {
     id: `privacy_export_${randomUUID()}`,
@@ -2551,6 +2569,7 @@ export function requestPrivacyDataExport(): PrivacyDataExportRecord {
     status: "completed",
     export_format: settings.export_format,
     includes_raw_question_text: false,
+    includes_private_followups: false,
     download_url: `/api/me/data-export/${settings.user_id}/latest`,
     created_at: now,
     completed_at: now,
@@ -2567,17 +2586,17 @@ export function requestPrivacyDataExport(): PrivacyDataExportRecord {
   };
   complianceReviews.set(reviewRecord.id, reviewRecord);
   appendAuditLog({ action: "privacy_data_export_completed", risk_label: "privacy", detail: record.id });
-  persistStore();
+  await persistStore();
   return record;
 }
 
-export function listComplianceReviews(): ComplianceReviewRecord[] {
-  hydrateStore();
+export async function listComplianceReviews() {
+  await hydrateStore();
   return Array.from(complianceReviews.values()).sort((left, right) => right.created_at.localeCompare(left.created_at));
 }
 
-export function resolveComplianceReview(reviewId: string, rawInput: unknown): ComplianceReviewRecord {
-  hydrateStore();
+export async function resolveComplianceReview(reviewId: string, rawInput: unknown) {
+  await hydrateStore();
   const input: ComplianceReviewResolveRequest = ComplianceReviewResolveRequestSchema.parse(rawInput);
   const current = complianceReviews.get(reviewId);
   if (!current) {
@@ -2592,7 +2611,7 @@ export function resolveComplianceReview(reviewId: string, rawInput: unknown): Co
   };
   complianceReviews.set(reviewId, record);
   appendAuditLog({ action: "compliance_review_resolved", risk_label: current.risk_level, detail: `${reviewId}:${input.action}` });
-  persistStore();
+  await persistStore();
   return record;
 }
 
@@ -2604,9 +2623,20 @@ function ensureReading(readingId: string): ReadingRecord {
   return reading;
 }
 
-export function listReadingHistory(limit = 8): ReadingHistoryItem[] {
-  hydrateStore();
+function ensureReadingForScope(readingId: string, scope: PrincipalScope): ReadingRecord {
+  const reading = ensureReading(readingId);
+  const ownerId = scope.owner_id ?? DEFAULT_OWNER_ID;
+  if (reading.owner_id !== ownerId) {
+    throw new Error(`Reading forbidden: ${readingId}`);
+  }
+  return reading;
+}
+
+export async function listReadingHistory(limit = 8, scope: PrincipalScope = {}) {
+  await hydrateStore();
+  const ownerId = scope.owner_id ?? DEFAULT_OWNER_ID;
   return Array.from(casts.values())
+    .filter((item) => item.owner_id === ownerId)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
     .slice(0, limit)
     .map((item) => ({
@@ -2624,8 +2654,9 @@ export function listReadingHistory(limit = 8): ReadingHistoryItem[] {
     }));
 }
 
-export function deleteReadingHistory(readingId: string): { deleted: boolean } {
-  hydrateStore();
+export async function deleteReadingHistory(readingId: string, scope: PrincipalScope = {}) {
+  await hydrateStore();
+  ensureReadingForScope(readingId, scope);
   const deletedCast = casts.delete(readingId);
   const deletedReading = readings.delete(readingId);
   messages.delete(readingId);
@@ -2636,7 +2667,7 @@ export function deleteReadingHistory(readingId: string): { deleted: boolean } {
   }
   deleteAnalysisCache(readingId);
   if (deletedCast || deletedReading) {
-    persistStore();
+    await persistStore();
   }
   return { deleted: deletedCast || deletedReading };
 }
@@ -2689,6 +2720,10 @@ export function resetReadingStoreForTests(): void {
   complianceReviews.clear();
 }
 
+export function setReadingSnapshotStoreForTests(store: SnapshotStore | null): void {
+  testReadingSnapshotStore = store;
+}
+
 function createQuestionPreview(question: string): string {
   const normalized = question.replace(/\s+/g, " ").trim();
   if (normalized.length <= 18) return normalized;
@@ -2702,91 +2737,87 @@ function toCivilDateString(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function hydrateStore(): void {
-  if (isTestRuntime()) return;
-  const storePath = getStorePath();
-  if (!existsSync(storePath)) {
-    readings.clear();
-    casts.clear();
-    analyses.clear();
-    messages.clear();
-    shares.clear();
-    favorites.clear();
-    readingTags.clear();
-    learningProgress.clear();
-    feedbackRecords.clear();
-    auditLogs.clear();
-    knowledgeStatusOverrides.clear();
-    caseOverrides.clear();
-    courseProgress.clear();
-    creatorExports.clear();
-    experimentOverrides.clear();
-    events.clear();
-    devices.clear();
-    pushSettings.clear();
-    voiceJobs.clear();
-    readingImports.clear();
-    communityPosts.clear();
-    communityComments.clear();
-    communityReports.clear();
-    rulePackOverrides.clear();
-    adminReviews.clear();
-    contributorSubmissions.clear();
-    rulePackRegressions.clear();
-    ecosystemPackages.clear();
-    packageInstalls.clear();
-    settlementLedger.clear();
-    contributorSettlements.clear();
-    ecosystemQualityReviews.clear();
-    ecosystemRiskEvents.clear();
-    opsIncidents.clear();
-    commercialBillingSimulations.clear();
-    privacySettings.clear();
-    privacyDataExports.clear();
-    complianceReviews.clear();
-    return;
+function deriveTimeCastLines(castTime: string, dayGanzhi: string): CastRequest["line_values"] {
+  const seed = stableHash(`${castTime}:${dayGanzhi}:yiwen-time-cast`);
+  const values = [6, 7, 8, 9] as const;
+  const lines = Array.from({ length: 6 }, (_, index) => values[(seed + index * 7 + (seed >>> (index % 8))) % values.length]);
+
+  if (!lines.some((value) => value === 6 || value === 9)) {
+    lines[seed % 6] = seed % 2 === 0 ? 6 : 9;
   }
 
-  const parsed = JSON.parse(readFileSync(storePath, "utf8")) as {
-    readings?: ReadingRecord[];
-    casts?: CastRecord[];
-    analyses?: AnalysisRecord[];
-    messages?: MessageRecord[];
-    shares?: ShareRecord[];
-    favorites?: string[];
-    reading_tags?: Array<{ reading_id: string; tags: string[] }>;
-    learning_progress?: LearningProgressRecord[];
-    feedback?: FeedbackRecord[];
-    audit_logs?: AuditLogRecord[];
-    knowledge_status_overrides?: Array<{ id: string; status: ContentStatus; review_note?: string; updated_at: string }>;
-    cases?: CaseRecord[];
-    course_progress?: CourseProgressRecord[];
-    creator_exports?: CreatorExportRecord[];
-    experiments?: ExperimentRecord[];
-    events?: EventRecord[];
-    devices?: DeviceRecord[];
-    push_settings?: PushSettingsRecord[];
-    voice_jobs?: VoiceJobRecord[];
-    reading_imports?: ReadingImportRecord[];
-    community_posts?: CommunityPostRecord[];
-    community_comments?: Array<CommunityCommentRecord & { post_id: string }>;
-    community_reports?: CommunityReportRecord[];
-    rule_packs?: RulePackRecord[];
-    admin_reviews?: AdminReviewRecord[];
-    contributor_submissions?: ContributorSubmissionRecord[];
-    rule_pack_regressions?: RulePackRegressionRecord[];
-    ecosystem_packages?: EcosystemPackageRecord[];
-    package_installs?: PackageInstallRecord[];
-    settlement_ledger?: SettlementLedgerEventRecord[];
-    contributor_settlements?: ContributorSettlementRecord[];
-    ecosystem_quality_reviews?: EcosystemQualityRecord[];
-    ecosystem_risk_events?: EcosystemRiskEventRecord[];
-    ops_incidents?: OpsIncidentRecord[];
-    commercial_billing_simulations?: CommercialBillingSimulationRecord[];
-    privacy_settings?: UserPrivacySettingsRecord[];
-    privacy_data_exports?: PrivacyDataExportRecord[];
-    compliance_reviews?: ComplianceReviewRecord[];
-  };
+  return lines;
+}
+
+type ReadingStoreSnapshot = {
+  readings?: ReadingRecord[];
+  casts?: CastRecord[];
+  analyses?: AnalysisRecord[];
+  messages?: MessageRecord[];
+  shares?: ShareRecord[];
+  favorites?: string[];
+  reading_tags?: Array<{ reading_id: string; tags: string[] }>;
+  learning_progress?: LearningProgressRecord[];
+  feedback?: FeedbackRecord[];
+  audit_logs?: AuditLogRecord[];
+  knowledge_status_overrides?: Array<{ id: string; status: ContentStatus; review_note?: string; updated_at: string }>;
+  cases?: CaseRecord[];
+  course_progress?: CourseProgressRecord[];
+  creator_exports?: CreatorExportRecord[];
+  experiments?: ExperimentRecord[];
+  events?: EventRecord[];
+  devices?: DeviceRecord[];
+  push_settings?: PushSettingsRecord[];
+  voice_jobs?: VoiceJobRecord[];
+  reading_imports?: ReadingImportRecord[];
+  community_posts?: CommunityPostRecord[];
+  community_comments?: Array<CommunityCommentRecord & { post_id: string }>;
+  community_reports?: CommunityReportRecord[];
+  rule_packs?: RulePackRecord[];
+  admin_reviews?: AdminReviewRecord[];
+  contributor_submissions?: ContributorSubmissionRecord[];
+  rule_pack_regressions?: RulePackRegressionRecord[];
+  ecosystem_packages?: EcosystemPackageRecord[];
+  package_installs?: PackageInstallRecord[];
+  settlement_ledger?: SettlementLedgerEventRecord[];
+  contributor_settlements?: ContributorSettlementRecord[];
+  ecosystem_quality_reviews?: EcosystemQualityRecord[];
+  ecosystem_risk_events?: EcosystemRiskEventRecord[];
+  ops_incidents?: OpsIncidentRecord[];
+  commercial_billing_simulations?: CommercialBillingSimulationRecord[];
+  privacy_settings?: UserPrivacySettingsRecord[];
+  privacy_data_exports?: PrivacyDataExportRecord[];
+  compliance_reviews?: ComplianceReviewRecord[];
+};
+
+const readingSnapshotStore = createPostgresSnapshotStore();
+let testReadingSnapshotStore: SnapshotStore | null = null;
+
+async function hydrateStore(): Promise<void> {
+  const snapshotStore = getReadingSnapshotStore();
+  if (!snapshotStore) return;
+
+  const snapshot = (await snapshotStore.load(READING_SNAPSHOT_SCOPE)) as ReadingStoreSnapshot | null;
+  applyStoreSnapshot(snapshot ?? {});
+}
+
+async function persistStore(): Promise<void> {
+  const snapshotStore = getReadingSnapshotStore();
+  if (!snapshotStore) return;
+  await snapshotStore.save(READING_SNAPSHOT_SCOPE, createStoreSnapshot());
+}
+
+function getReadingSnapshotStore(): SnapshotStore | null {
+  if (testReadingSnapshotStore) return testReadingSnapshotStore;
+  if (!usesSharedSnapshotStore()) return null;
+  return readingSnapshotStore;
+}
+
+function usesSharedSnapshotStore(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim()) || process.env.NODE_ENV === "production";
+}
+
+function clearStore(): void {
   readings.clear();
   casts.clear();
   analyses.clear();
@@ -2818,188 +2849,107 @@ function hydrateStore(): void {
   packageInstalls.clear();
   settlementLedger.clear();
   contributorSettlements.clear();
-  for (const reading of parsed.readings ?? []) {
-    readings.set(reading.id, reading);
-  }
-  for (const cast of parsed.casts ?? []) {
-    casts.set(cast.reading_id, cast);
-  }
-  for (const analysis of parsed.analyses ?? []) {
-    analyses.set(getAnalysisCacheKey(analysis.reading_id, analysis.mode), analysis);
-  }
+  ecosystemQualityReviews.clear();
+  ecosystemRiskEvents.clear();
+  opsIncidents.clear();
+  commercialBillingSimulations.clear();
+  privacySettings.clear();
+  privacyDataExports.clear();
+  complianceReviews.clear();
+}
+
+function applyStoreSnapshot(parsed: ReadingStoreSnapshot): void {
+  clearStore();
+  for (const reading of parsed.readings ?? []) readings.set(reading.id, reading);
+  for (const cast of parsed.casts ?? []) casts.set(cast.reading_id, cast);
+  for (const analysis of parsed.analyses ?? []) analyses.set(getAnalysisCacheKey(analysis.reading_id, analysis.mode), analysis);
   for (const message of parsed.messages ?? []) {
     const current = messages.get(message.reading_id) ?? [];
     current.push(message);
     messages.set(message.reading_id, current);
   }
-  for (const share of parsed.shares ?? []) {
-    shares.set(share.share_id, share);
-  }
-  for (const readingId of parsed.favorites ?? []) {
-    favorites.add(readingId);
-  }
-  for (const item of parsed.reading_tags ?? []) {
-    readingTags.set(item.reading_id, item.tags);
-  }
-  for (const progress of parsed.learning_progress ?? []) {
-    learningProgress.set(progress.subject_id, progress);
-  }
-  for (const feedback of parsed.feedback ?? []) {
-    feedbackRecords.set(feedback.id, feedback);
-  }
-  for (const auditLog of parsed.audit_logs ?? []) {
-    auditLogs.set(auditLog.id, auditLog);
-  }
-  for (const item of parsed.knowledge_status_overrides ?? []) {
-    knowledgeStatusOverrides.set(item.id, item);
-  }
-  for (const item of parsed.cases ?? []) {
-    caseOverrides.set(item.id, item);
-  }
-  for (const item of parsed.course_progress ?? []) {
-    courseProgress.set(`${item.course_id}:${item.lesson_id}`, item);
-  }
-  for (const item of parsed.creator_exports ?? []) {
-    creatorExports.set(item.id, item);
-  }
-  for (const item of parsed.experiments ?? []) {
-    experimentOverrides.set(item.id, item);
-  }
-  for (const item of parsed.events ?? []) {
-    events.set(item.id, item);
-  }
-  for (const item of parsed.devices ?? []) {
-    devices.set(item.device_id, item);
-  }
-  for (const item of parsed.push_settings ?? []) {
-    pushSettings.set(item.device_id, item);
-  }
-  for (const item of parsed.voice_jobs ?? []) {
-    voiceJobs.set(item.job_id, item);
-  }
-  for (const item of parsed.reading_imports ?? []) {
-    readingImports.set(item.import_id, item);
-  }
-  for (const item of parsed.community_posts ?? []) {
-    communityPosts.set(item.id, item);
-  }
+  for (const share of parsed.shares ?? []) shares.set(share.share_id, share);
+  for (const readingId of parsed.favorites ?? []) favorites.add(readingId);
+  for (const item of parsed.reading_tags ?? []) readingTags.set(item.reading_id, item.tags);
+  for (const progress of parsed.learning_progress ?? []) learningProgress.set(progress.subject_id, progress);
+  for (const feedback of parsed.feedback ?? []) feedbackRecords.set(feedback.id, feedback);
+  for (const auditLog of parsed.audit_logs ?? []) auditLogs.set(auditLog.id, auditLog);
+  for (const item of parsed.knowledge_status_overrides ?? []) knowledgeStatusOverrides.set(item.id, item);
+  for (const item of parsed.cases ?? []) caseOverrides.set(item.id, item);
+  for (const item of parsed.course_progress ?? []) courseProgress.set(`${item.course_id}:${item.lesson_id}`, item);
+  for (const item of parsed.creator_exports ?? []) creatorExports.set(item.id, item);
+  for (const item of parsed.experiments ?? []) experimentOverrides.set(item.id, item);
+  for (const item of parsed.events ?? []) events.set(item.id, item);
+  for (const item of parsed.devices ?? []) devices.set(item.device_id, item);
+  for (const item of parsed.push_settings ?? []) pushSettings.set(item.device_id, item);
+  for (const item of parsed.voice_jobs ?? []) voiceJobs.set(item.job_id, item);
+  for (const item of parsed.reading_imports ?? []) readingImports.set(item.import_id, item);
+  for (const item of parsed.community_posts ?? []) communityPosts.set(item.id, item);
   for (const item of parsed.community_comments ?? []) {
     const current = communityComments.get(item.post_id) ?? [];
     current.push(item);
     communityComments.set(item.post_id, current);
   }
-  for (const item of parsed.community_reports ?? []) {
-    communityReports.set(item.id, item);
-  }
-  for (const item of parsed.rule_packs ?? []) {
-    rulePackOverrides.set(item.id, item);
-  }
-  for (const item of parsed.admin_reviews ?? []) {
-    adminReviews.set(item.id, item);
-  }
-  for (const item of parsed.contributor_submissions ?? []) {
-    contributorSubmissions.set(item.id, item);
-  }
-  for (const item of parsed.rule_pack_regressions ?? []) {
-    rulePackRegressions.set(item.id, item);
-  }
-  for (const item of parsed.ecosystem_packages ?? []) {
-    ecosystemPackages.set(item.id, item);
-  }
-  for (const item of parsed.package_installs ?? []) {
-    packageInstalls.set(item.id, item);
-  }
-  for (const item of parsed.settlement_ledger ?? []) {
-    settlementLedger.set(item.id, item);
-  }
-  for (const item of parsed.contributor_settlements ?? []) {
-    contributorSettlements.set(item.id, item);
-  }
-  for (const item of parsed.ecosystem_quality_reviews ?? []) {
-    ecosystemQualityReviews.set(item.package_id, item);
-  }
-  for (const item of parsed.ecosystem_risk_events ?? []) {
-    ecosystemRiskEvents.set(item.id, item);
-  }
-  for (const item of parsed.ops_incidents ?? []) {
-    opsIncidents.set(item.id, item);
-  }
-  for (const item of parsed.commercial_billing_simulations ?? []) {
-    commercialBillingSimulations.set(item.id, item);
-  }
-  for (const item of parsed.privacy_settings ?? []) {
-    privacySettings.set(item.user_id, item);
-  }
-  for (const item of parsed.privacy_data_exports ?? []) {
-    privacyDataExports.set(item.id, item);
-  }
-  for (const item of parsed.compliance_reviews ?? []) {
-    complianceReviews.set(item.id, item);
-  }
+  for (const item of parsed.community_reports ?? []) communityReports.set(item.id, item);
+  for (const item of parsed.rule_packs ?? []) rulePackOverrides.set(item.id, item);
+  for (const item of parsed.admin_reviews ?? []) adminReviews.set(item.id, item);
+  for (const item of parsed.contributor_submissions ?? []) contributorSubmissions.set(item.id, item);
+  for (const item of parsed.rule_pack_regressions ?? []) rulePackRegressions.set(item.id, item);
+  for (const item of parsed.ecosystem_packages ?? []) ecosystemPackages.set(item.id, item);
+  for (const item of parsed.package_installs ?? []) packageInstalls.set(item.id, item);
+  for (const item of parsed.settlement_ledger ?? []) settlementLedger.set(item.id, item);
+  for (const item of parsed.contributor_settlements ?? []) contributorSettlements.set(item.id, item);
+  for (const item of parsed.ecosystem_quality_reviews ?? []) ecosystemQualityReviews.set(item.package_id, item);
+  for (const item of parsed.ecosystem_risk_events ?? []) ecosystemRiskEvents.set(item.id, item);
+  for (const item of parsed.ops_incidents ?? []) opsIncidents.set(item.id, item);
+  for (const item of parsed.commercial_billing_simulations ?? []) commercialBillingSimulations.set(item.id, item);
+  for (const item of parsed.privacy_settings ?? []) privacySettings.set(item.user_id, item);
+  for (const item of parsed.privacy_data_exports ?? []) privacyDataExports.set(item.id, item);
+  for (const item of parsed.compliance_reviews ?? []) complianceReviews.set(item.id, item);
 }
 
-function persistStore(): void {
-  if (isTestRuntime()) return;
-  const storePath = getStorePath();
-  mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(
-    storePath,
-    JSON.stringify(
-      {
-        readings: Array.from(readings.values()),
-        casts: Array.from(casts.values()),
-        analyses: Array.from(analyses.values()),
-        messages: Array.from(messages.values()).flat(),
-        shares: Array.from(shares.values()),
-        favorites: Array.from(favorites),
-        reading_tags: Array.from(readingTags.entries()).map(([reading_id, tags]) => ({ reading_id, tags })),
-        learning_progress: Array.from(learningProgress.values()),
-        feedback: Array.from(feedbackRecords.values()),
-        audit_logs: Array.from(auditLogs.values()),
-        knowledge_status_overrides: Array.from(knowledgeStatusOverrides.entries()).map(([id, value]) => ({ id, ...value })),
-        cases: Array.from(caseOverrides.values()),
-        course_progress: Array.from(courseProgress.values()),
-        creator_exports: Array.from(creatorExports.values()),
-        experiments: Array.from(experimentOverrides.values()),
-        events: Array.from(events.values()),
-        devices: Array.from(devices.values()),
-        push_settings: Array.from(pushSettings.values()),
-        voice_jobs: Array.from(voiceJobs.values()),
-        reading_imports: Array.from(readingImports.values()),
-        community_posts: Array.from(communityPosts.values()),
-        community_comments: Array.from(communityComments.values()).flat(),
-        community_reports: Array.from(communityReports.values()),
-        rule_packs: Array.from(rulePackOverrides.values()),
-        admin_reviews: Array.from(adminReviews.values()),
-        contributor_submissions: Array.from(contributorSubmissions.values()),
-        rule_pack_regressions: Array.from(rulePackRegressions.values()),
-        ecosystem_packages: Array.from(ecosystemPackages.values()),
-        package_installs: Array.from(packageInstalls.values()),
-        settlement_ledger: Array.from(settlementLedger.values()),
-        contributor_settlements: Array.from(contributorSettlements.values()),
-        ecosystem_quality_reviews: Array.from(ecosystemQualityReviews.values()),
-        ecosystem_risk_events: Array.from(ecosystemRiskEvents.values()),
-        ops_incidents: Array.from(opsIncidents.values()),
-        commercial_billing_simulations: Array.from(commercialBillingSimulations.values()),
-        privacy_settings: Array.from(privacySettings.values()),
-        privacy_data_exports: Array.from(privacyDataExports.values()),
-        compliance_reviews: Array.from(complianceReviews.values()),
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
+function createStoreSnapshot(): ReadingStoreSnapshot {
+  return {
+    readings: Array.from(readings.values()),
+    casts: Array.from(casts.values()),
+    analyses: Array.from(analyses.values()),
+    messages: Array.from(messages.values()).flat(),
+    shares: Array.from(shares.values()),
+    favorites: Array.from(favorites),
+    reading_tags: Array.from(readingTags.entries()).map(([reading_id, tags]) => ({ reading_id, tags })),
+    learning_progress: Array.from(learningProgress.values()),
+    feedback: Array.from(feedbackRecords.values()),
+    audit_logs: Array.from(auditLogs.values()),
+    knowledge_status_overrides: Array.from(knowledgeStatusOverrides.entries()).map(([id, value]) => ({ id, ...value })),
+    cases: Array.from(caseOverrides.values()),
+    course_progress: Array.from(courseProgress.values()),
+    creator_exports: Array.from(creatorExports.values()),
+    experiments: Array.from(experimentOverrides.values()),
+    events: Array.from(events.values()),
+    devices: Array.from(devices.values()),
+    push_settings: Array.from(pushSettings.values()),
+    voice_jobs: Array.from(voiceJobs.values()),
+    reading_imports: Array.from(readingImports.values()),
+    community_posts: Array.from(communityPosts.values()),
+    community_comments: Array.from(communityComments.values()).flat(),
+    community_reports: Array.from(communityReports.values()),
+    rule_packs: Array.from(rulePackOverrides.values()),
+    admin_reviews: Array.from(adminReviews.values()),
+    contributor_submissions: Array.from(contributorSubmissions.values()),
+    rule_pack_regressions: Array.from(rulePackRegressions.values()),
+    ecosystem_packages: Array.from(ecosystemPackages.values()),
+    package_installs: Array.from(packageInstalls.values()),
+    settlement_ledger: Array.from(settlementLedger.values()),
+    contributor_settlements: Array.from(contributorSettlements.values()),
+    ecosystem_quality_reviews: Array.from(ecosystemQualityReviews.values()),
+    ecosystem_risk_events: Array.from(ecosystemRiskEvents.values()),
+    ops_incidents: Array.from(opsIncidents.values()),
+    commercial_billing_simulations: Array.from(commercialBillingSimulations.values()),
+    privacy_settings: Array.from(privacySettings.values()),
+    privacy_data_exports: Array.from(privacyDataExports.values()),
+    compliance_reviews: Array.from(complianceReviews.values()),
+  };
 }
-
-function getStorePath(): string {
-  return join(/*turbopackIgnore: true*/ process.cwd(), ".data", "readings.json");
-}
-
-function isTestRuntime(): boolean {
-  return process.env.NODE_ENV === "test" || process.env.VITEST === "true";
-}
-
 function getAnalysisCacheKey(readingId: string, mode: AnalyzeRequest["mode"]): string {
   return `${readingId}:${mode}`;
 }
@@ -3035,7 +2985,7 @@ function getKnowledgeCardsForAnalysis(
   });
 }
 
-function appendMessage(input: Omit<MessageRecord, "id" | "created_at">): void {
+async function appendMessage(input: Omit<MessageRecord, "id" | "created_at">): Promise<void> {
   const next: MessageRecord = {
     ...input,
     id: `msg_${randomUUID()}`,
@@ -3043,7 +2993,7 @@ function appendMessage(input: Omit<MessageRecord, "id" | "created_at">): void {
   };
   const current = messages.get(input.reading_id) ?? [];
   messages.set(input.reading_id, [...current, next].slice(-20));
-  persistStore();
+  await persistStore();
 }
 
 function listKnowledgeCardsForLearning(input: {
@@ -3082,7 +3032,7 @@ function makeCourseSeed(
     id: `${id}-lesson-${String(index + 1).padStart(2, "0")}`,
     title: `${title} ${index + 1}`,
     lesson_type: lessonType,
-    summary: "围绕知识卡、练习和卦例复盘建立学习闭环。",
+    summary: "????????????????????",
     knowledge_card_ids: KNOWLEDGE_CARD_SEEDS.slice(index, index + 2).map((card) => card.id),
     exercise_ids: EXERCISE_SEEDS.slice(index, index + 2).map((exercise) => exercise.id),
     case_ids: caseIds.slice(0, Math.max(1, Math.min(caseIds.length, index + 1))),
@@ -3093,7 +3043,7 @@ function makeCourseSeed(
     title,
     status: "published",
     difficulty,
-    summary: "学习权益课程，只做传统文化知识讲解、练习和案例复盘。",
+    summary: "??????????????????????????",
     lesson_count: lessons.length,
     lessons,
     badge: `${title}完成`,
@@ -3189,7 +3139,10 @@ function normalizeImportPayload(sourceType: ImportSourceType, payload: ReadingIm
   if (typeof payload !== "string") {
     return payload;
   }
-  const numbers = payload.match(/[6789]/g)?.slice(0, 6).map((value) => Number(value) as CastRequest["line_values"][number]);
+  const numbers = payload
+    .match(/[6789]/g)
+    ?.slice(0, 6)
+    .map((value) => Number(value) as NonNullable<ImportedReadingPayload["line_values"]>[number]);
   const scenario = CASE_SCENARIOS.find((item) => payload.includes(item)) ?? CASE_SCENARIOS[0];
   const question = payload.match(/question:\s*([^;]+)/i)?.[1]?.trim() ?? payload.match(/问题[:：]\s*([^;；]+)/)?.[1]?.trim() ?? "导入卦例复盘";
   const castTime = payload.match(/(?:date|cast_time):\s*(\d{4}-\d{2}-\d{2})/i)?.[1] ?? payload.match(/(\d{4}-\d{2}-\d{2})/)?.[1];
@@ -3309,9 +3262,9 @@ function appendEcosystemRiskEvent(input: Omit<EcosystemRiskEventRecord, "id" | "
   ecosystemRiskEvents.set(record.id, record);
 }
 
-function makeDefaultPrivacySettings(): UserPrivacySettingsRecord {
+function makeDefaultPrivacySettings(userId = DEFAULT_OWNER_ID): UserPrivacySettingsRecord {
   return {
-    user_id: "anonymous",
+    user_id: userId,
     save_history: true,
     allow_personalization: true,
     allow_sensitive_review: false,
@@ -3321,7 +3274,7 @@ function makeDefaultPrivacySettings(): UserPrivacySettingsRecord {
   };
 }
 
-function createSubmissionTarget(input: Pick<ContributorSubmissionRecord, "submission_type" | "payload"> | ContributorSubmissionRequest): { id: string } | null {
+async function createSubmissionTarget(input: Pick<ContributorSubmissionRecord, "submission_type" | "payload"> | ContributorSubmissionRequest): Promise<{ id: string } | null> {
   if (input.submission_type !== "rule_pack") {
     return null;
   }
@@ -3329,7 +3282,7 @@ function createSubmissionTarget(input: Pick<ContributorSubmissionRecord, "submis
     ...input.payload,
     status: "testing",
   });
-  return upsertRulePack(payload);
+  return await upsertRulePack(payload);
 }
 
 function buildSubmissionDiffSummary(current: ContributorSubmissionRecord, patch: ContributorSubmissionPatch): string {
@@ -3413,14 +3366,14 @@ function stableHash(value: string): number {
 }
 
 function buildCreatorExportTitle(exportType: CreatorExportType, caseRecord?: CaseRecord, cast?: CastRecord): string {
-  const base = caseRecord?.title ?? `${cast?.base_chart ?? "排盘"}学习素材`;
+  const base = caseRecord?.title ?? `${cast?.base_chart ?? "??"}????`;
   const labels: Record<CreatorExportType, string> = {
-    article: "图文讲解",
-    short_video_script: "短视频脚本",
-    long_image: "长图结构",
-    chart_snapshot: "排盘图导出",
+    article: "????",
+    short_video_script: "?????",
+    long_image: "????",
+    chart_snapshot: "?????",
   };
-  return `${base} · ${labels[exportType]}`;
+  return `${base} ? ${labels[exportType]}`;
 }
 
 function buildCreatorExportSections(
@@ -3432,41 +3385,41 @@ function buildCreatorExportSections(
   },
 ): string[] {
   const caseLine = context.caseRecord
-    ? `案例：${context.caseRecord.title}，${context.caseRecord.question_preview}，来源：${context.caseRecord.source_refs.join("、")}`
-    : "案例：基于当前脱敏排盘生成学习素材。";
+    ? `???${context.caseRecord.title}?${context.caseRecord.question_preview}????${context.caseRecord.source_refs.join("?")}`
+    : "??????????????????";
   const chartLine = context.cast
-    ? `排盘快照：本卦${context.cast.base_chart}，变卦${context.cast.changed_chart}，日干支${context.cast.day_ganzhi}，月建${context.cast.month_branch}。`
-    : `排盘快照：${context.caseRecord?.base_chart ?? "待补充"} -> ${context.caseRecord?.changed_chart ?? "待补充"}。`;
+    ? `???????${context.cast.base_chart}???${context.cast.changed_chart}????${context.cast.day_ganzhi}???${context.cast.month_branch}?`
+    : `?????${context.caseRecord?.base_chart ?? "???"} -> ${context.caseRecord?.changed_chart ?? "???"}?`;
   const evidenceLine = context.analysis
-    ? `证据主线：${context.analysis.evidence_tree.slice(0, 3).map((node) => `${node.rule_id} ${node.conclusion}`).join("；")}`
-    : `证据主线：${context.caseRecord?.rule_ids.join("、") ?? "规则卡"}。`;
-  const counterLine = context.caseRecord?.counter_evidence[0] ?? context.analysis?.counter_evidence[0]?.conclusion ?? "保留反证，不给确定承诺。";
+    ? `?????${context.analysis.evidence_tree.slice(0, 3).map((node) => `${node.rule_id} ${node.conclusion}`).join("?")}`
+    : `?????${context.caseRecord?.rule_ids.join("?") ?? "???"}?`;
+  const counterLine = context.caseRecord?.counter_evidence[0] ?? context.analysis?.counter_evidence[0]?.conclusion ?? "????????????";
 
   if (exportType === "short_video_script") {
     return [
-      "开场：用一个脱敏卦例说明如何从排盘进入证据树。",
+      "???????????????????????",
       chartLine,
       evidenceLine,
-      `反证：${counterLine}`,
-      "收束：把卦例当作传统文化学习材料，不替代现实沟通、专业建议或个人判断。",
+      `???${counterLine}`,
+      "???????????????????????????????????",
     ];
   }
 
   if (exportType === "long_image") {
     return [
-      "长图标题区：卦名、场景和娱乐学习免责声明。",
+      "?????????????????????",
       chartLine,
       evidenceLine,
-      `反证区：${counterLine}`,
-      "结尾区：知识卡引用、来源说明和隐私脱敏说明。",
+      `????${counterLine}`,
+      "??????????????????????",
     ];
   }
 
   if (exportType === "chart_snapshot") {
     return [
-      "排盘图信息：仅展示卦名、时间、六亲六神和动爻标识。",
+      "?????????????????????????",
       chartLine,
-      "隐私规则：隐藏原始问题、私密追问和用户标识。",
+      "??????????????????????",
       CREATOR_SAFETY_NOTICE,
     ];
   }
@@ -3475,11 +3428,10 @@ function buildCreatorExportSections(
     caseLine,
     chartLine,
     evidenceLine,
-    `反证观察：${counterLine}`,
-    "讲解边界：只做学习复盘，不输出承诺式结论。",
+    `?????${counterLine}`,
+    "?????????????????????",
   ];
 }
-
 function assertCreatorContentSafe(sections: string[]): void {
   const joined = sections.join("\n");
   const banned = CREATOR_BANNED_TERMS.find((term) => joined.includes(term));

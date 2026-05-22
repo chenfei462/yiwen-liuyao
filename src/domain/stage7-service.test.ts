@@ -29,12 +29,12 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
     resetReadingStoreForTests();
   });
 
-  test("supports contributor draft, submit, review, regression, publish, install, and disable flow", () => {
-    const dashboard = getContributorDashboard();
+  test("supports contributor draft, submit, review, regression, publish, install, and disable flow", async () => {
+    const dashboard = await getContributorDashboard();
     expect(dashboard.roles).toEqual(["creator", "expert"]);
     expect(dashboard.settlement_mode).toBe("simulated");
 
-    const submission = createContributorSubmission({
+    const submission = await createContributorSubmission({
       submission_type: "rule_pack",
       title: "Controlled yongshen extension",
       payload: {
@@ -50,63 +50,63 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
     expect(submission.status).toBe("draft");
     expect(submission.contributor_id).toBe("contributor_demo");
 
-    const patched = patchContributorSubmission(submission.id, {
+    const patched = await patchContributorSubmission(submission.id, {
       title: "Controlled yongshen extension v1",
       payload: { release_note: "tightened review copy" },
     });
     expect(patched.version).toBe(2);
     expect(patched.diff_summary).toContain("title");
 
-    const submitted = submitContributorSubmission(submission.id, {});
+    const submitted = await submitContributorSubmission(submission.id, {});
     expect(submitted.status).toBe("in_review");
-    expect(listAdminSubmissions().some((item) => item.id === submission.id)).toBe(true);
+    expect((await listAdminSubmissions()).some((item) => item.id === submission.id)).toBe(true);
 
-    const professional = reviewContributorSubmission(submission.id, {
+    const professional = await reviewContributorSubmission(submission.id, {
       review_gate: "professional",
       decision: "approved",
       note: "professional review passed",
     });
     expect(professional.gates.professional).toBe("approved");
 
-    reviewContributorSubmission(submission.id, {
+    await reviewContributorSubmission(submission.id, {
       review_gate: "compliance",
       decision: "approved",
       note: "compliance review passed",
     });
-    reviewContributorSubmission(submission.id, {
+    await reviewContributorSubmission(submission.id, {
       review_gate: "safety",
       decision: "approved",
       note: "safety scan passed",
     });
 
-    const regression = runRulePackRegression("rule-pack-v3-controlled", {
+    const regression = await runRulePackRegression("rule-pack-v3-controlled", {
       validation_case_ids: ["case-001", "case-002"],
       force: true,
     });
     expect(regression.status).toBe("passed");
     expect(regression.p95_ms).toBeLessThan(10_000);
 
-    const approved = getSubmission(submission.id);
+    const approved = await getSubmission(submission.id);
     expect(approved.status).toBe("approved");
 
-    const published = publishRulePackToEcosystem("rule-pack-v3-controlled", {
+    const published = await publishRulePackToEcosystem("rule-pack-v3-controlled", {
       release_note: "first controlled ecosystem release",
     });
     expect(published.status).toBe("published");
     expect(published.package_type).toBe("rule_pack");
-    expect(getRulePack("rule-pack-v3-controlled").rule_pack_version).toBe(1);
-    expect(listEcosystemPackages().some((item) => item.id === published.id)).toBe(true);
+    expect(((await getRulePack("rule-pack-v3-controlled")).rule_pack_version)).toBe(1);
+    expect(((await listEcosystemPackages()).some((item) => item.id === published.id))).toBe(true);
 
-    const install = installEcosystemPackage({ package_id: published.id });
+    const install = await installEcosystemPackage({ package_id: published.id });
     expect(install.status).toBe("installed");
-    expect(getEcosystemPackage(published.id).install_count).toBe(1);
+    expect(((await getEcosystemPackage(published.id)).install_count)).toBe(1);
 
-    const disabled = disableEcosystemPackage({ package_id: published.id });
+    const disabled = await disableEcosystemPackage({ package_id: published.id });
     expect(disabled.status).toBe("disabled");
   });
 
-  test("blocks publish before gates, handles change requests, and supports rollback and suspension", () => {
-    const submission = createContributorSubmission({
+  test("blocks publish before gates, handles change requests, and supports rollback and suspension", async () => {
+    const submission = await createContributorSubmission({
       submission_type: "rule_pack",
       title: "Needs more review",
       payload: {
@@ -119,46 +119,46 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
       },
       source_refs: ["v3-review-block"],
     });
-    submitContributorSubmission(submission.id, {});
+    await submitContributorSubmission(submission.id, {});
 
-    expect(() =>
+    await expect(
       publishRulePackToEcosystem("rule-pack-v3-review-block", {
         release_note: "should fail",
       }),
-    ).toThrow(/not ready/);
+    ).rejects.toThrow(/not ready/);
 
-    const changeRequest = reviewContributorSubmission(submission.id, {
+    const changeRequest = await reviewContributorSubmission(submission.id, {
       review_gate: "editorial",
       decision: "changes_requested",
       note: "source wording needs revision",
     });
     expect(changeRequest.status).toBe("changes_requested");
 
-    patchContributorSubmission(submission.id, {
+    await patchContributorSubmission(submission.id, {
       payload: { source_refs: ["v3-review-block", "revised-source"] },
     });
-    submitContributorSubmission(submission.id, {});
-    approveRulePackSubmissionForTests(submission.id);
-    runRulePackRegression("rule-pack-v3-review-block", { force: true });
+    await submitContributorSubmission(submission.id, {});
+    await approveRulePackSubmissionForTests(submission.id);
+    await runRulePackRegression("rule-pack-v3-review-block", { force: true });
 
-    const published = publishRulePackToEcosystem("rule-pack-v3-review-block", {
+    const published = await publishRulePackToEcosystem("rule-pack-v3-review-block", {
       release_note: "approved after revision",
     });
     expect(published.status).toBe("published");
 
-    const rollback = rollbackRulePackVersion("rule-pack-v3-review-block", {
+    const rollback = await rollbackRulePackVersion("rule-pack-v3-review-block", {
       target_version: 1,
       reason: "quality rollback",
     });
     expect(rollback.status).toBe("deprecated");
 
-    const suspended = suspendEcosystemPackage(published.id, { reason: "unsafe marketplace copy" });
+    const suspended = await suspendEcosystemPackage(published.id, { reason: "unsafe marketplace copy" });
     expect(suspended.status).toBe("suspended");
-    expect(listEcosystemPackages().some((item) => item.id === published.id)).toBe(false);
+    expect(((await listEcosystemPackages()).some((item) => item.id === published.id))).toBe(false);
   });
 
-  test("calculates simulated settlement events from ecosystem installs without real payouts", () => {
-    const submission = createContributorSubmission({
+  test("calculates simulated settlement events from ecosystem installs without real payouts", async () => {
+    const submission = await createContributorSubmission({
       submission_type: "rule_pack",
       title: "Settlement demo",
       payload: {
@@ -171,15 +171,15 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
       },
       source_refs: ["v3-settlement"],
     });
-    submitContributorSubmission(submission.id, {});
-    approveRulePackSubmissionForTests(submission.id);
-    runRulePackRegression("rule-pack-v3-settlement", { force: true });
-    const published = publishRulePackToEcosystem("rule-pack-v3-settlement", {
+    await submitContributorSubmission(submission.id, {});
+    await approveRulePackSubmissionForTests(submission.id);
+    await runRulePackRegression("rule-pack-v3-settlement", { force: true });
+    const published = await publishRulePackToEcosystem("rule-pack-v3-settlement", {
       release_note: "settlement demo",
     });
-    installEcosystemPackage({ package_id: published.id });
+    await installEcosystemPackage({ package_id: published.id });
 
-    const settlement = simulateContributorSettlements({
+    const settlement = await simulateContributorSettlements({
       contributor_id: "contributor_demo",
       period: "2026-05",
     });
@@ -187,18 +187,18 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
     expect(settlement.status).toBe("calculated");
     expect(settlement.total_amount_cents).toBeGreaterThan(0);
 
-    const list = getContributorSettlementList();
+    const list = await getContributorSettlementList();
     expect(list.some((item) => item.id === settlement.id)).toBe(true);
 
-    const metrics = getEcosystemMetrics();
+    const metrics = await getEcosystemMetrics();
     expect(metrics.published_package_count).toBe(1);
     expect(metrics.install_count).toBe(1);
     expect(metrics.simulated_revenue_cents).toBe(settlement.total_amount_cents);
     expect(metrics.regression_failure_rate).toBe(0);
   });
 
-  test("prevents marketplace publication of unsafe contributor content", () => {
-    expect(() =>
+  test("prevents marketplace publication of unsafe contributor content", async () => {
+    await expect(
       createContributorSubmission({
         submission_type: "case",
         title: "Unsafe promise",
@@ -207,8 +207,8 @@ describe("V3.0 controlled ecosystem and contributor governance service", () => {
         },
         source_refs: ["unsafe"],
       }),
-    ).toThrow(/unsafe ecosystem content/);
+    ).rejects.toThrow(/unsafe ecosystem content/);
 
-    expect(listContributorSubmissions()).toHaveLength(0);
+    expect((await listContributorSubmissions())).toHaveLength(0);
   });
 });

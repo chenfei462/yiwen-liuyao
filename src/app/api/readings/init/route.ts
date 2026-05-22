@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { initReading } from "@/domain/reading-service";
+import { requireOwnerScope } from "../../_auth";
 
 export async function POST(request: Request) {
+  const scope = requireOwnerScope(request);
+  if (scope instanceof NextResponse) return scope;
   try {
     const payload = await request.json();
-    return NextResponse.json(initReading(payload));
+    return NextResponse.json(await initReading(payload, scope));
   } catch (error) {
     return toErrorResponse(error);
   }

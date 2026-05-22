@@ -4,9 +4,9 @@ import { getPublicShare } from "@/domain/reading-service";
 
 export default async function SharePage({ params }: { params: Promise<{ share_id: string }> }) {
   const { share_id } = await params;
-  let share: ReturnType<typeof getPublicShare>;
+  let share: Awaited<ReturnType<typeof getPublicShare>>;
   try {
-    share = getPublicShare(share_id);
+    share = await getPublicShare(share_id);
   } catch {
     notFound();
   }

@@ -4,7 +4,7 @@ import { registerDevice } from "@/domain/reading-service";
 
 export async function POST(request: Request) {
   try {
-    return NextResponse.json({ device: registerDevice(await request.json()) });
+    return NextResponse.json({ device: await registerDevice(await request.json()) });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

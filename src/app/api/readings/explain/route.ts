@@ -49,5 +49,9 @@ function toErrorResponse(error: unknown, fallback: string) {
   if (error instanceof Error && error.message.includes("safety validation")) {
     return NextResponse.json({ error: "unsafe_ai_output" }, { status: 422 });
   }
+  if (error instanceof Error) {
+    console.error("[readings/explain]", error.message);
+    return NextResponse.json({ error: fallback, message: error.message }, { status: 500 });
+  }
   return NextResponse.json({ error: fallback }, { status: 500 });
 }

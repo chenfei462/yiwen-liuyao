@@ -4,7 +4,7 @@ import { createCommunityComment } from "@/domain/reading-service";
 
 export async function POST(request: Request) {
   try {
-    return NextResponse.json({ comment: createCommunityComment(await request.json()) });
+    return NextResponse.json({ comment: await createCommunityComment(await request.json()) });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

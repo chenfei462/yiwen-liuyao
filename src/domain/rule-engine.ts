@@ -8,6 +8,11 @@ type ElementName = "木" | "火" | "土" | "金" | "水";
 type LiuqinName = ChartLine["liuqin"];
 type EvidencePolarity = "+" | "-" | "neutral";
 type EvidenceConfidence = "低" | "中" | "高";
+type ScenarioTemplate = {
+  primary?: LiuqinName;
+  auxiliary: LiuqinName[];
+  yongshenRole: "主用神" | "世爻观察" | "none";
+};
 
 export type EvidenceNode = {
   id: string;
@@ -119,14 +124,7 @@ const OPPOSITES: Record<BranchName, BranchName> = {
   亥: "巳",
 };
 
-const SCENARIO_TEMPLATES: Record<
-  Scenario,
-  {
-    primary?: LiuqinName;
-    auxiliary: LiuqinName[];
-    yongshenRole: "主用神" | "世爻观察" | "none";
-  }
-> = {
+const SCENARIO_TEMPLATES: Record<Scenario, ScenarioTemplate> = {
   事业: { primary: "官鬼", auxiliary: ["父母"], yongshenRole: "主用神" },
   财务: { primary: "妻财", auxiliary: ["子孙", "兄弟"], yongshenRole: "主用神" },
   感情: { auxiliary: ["官鬼", "妻财"], yongshenRole: "世爻观察" },
@@ -143,6 +141,7 @@ export function analyzeRules(input: RuleAnalysisInput): RuleAnalysisResult {
     throw new Error("Cast not found: evidence analysis requires a chart");
   }
 
+  const template = SCENARIO_TEMPLATES[input.scenario];
   const yongshen = selectYongshen(input.scenario, input.chart);
   const evidence: EvidenceNode[] = [];
   const counterEvidence: EvidenceNode[] = [];
@@ -155,6 +154,9 @@ export function analyzeRules(input: RuleAnalysisInput): RuleAnalysisResult {
     });
     sequence += 1;
   };
+
+  pushEvidence(buildHexagramNode(input.chart));
+  pushEvidence(buildStaticChangeNode(input.chart));
 
   if (yongshen) {
     const yongshenLine = getLine(input.chart, yongshen.line_no);
@@ -174,30 +176,22 @@ export function analyzeRules(input: RuleAnalysisInput): RuleAnalysisResult {
     pushEvidence(xunkongNode, xunkongNode.polarity === "-" ? counterEvidence : evidence);
     const movingNode = buildMovingNode(yongshen, yongshenLine);
     pushEvidence(movingNode, movingNode.polarity === "-" ? counterEvidence : evidence);
+    pushCommonLineEvidence(input.chart, input.dateContext.month_branch, pushEvidence);
   } else {
     const shiLine = getLine(input.chart, input.chart.base_chart.shi_line);
     const yingLine = getLine(input.chart, input.chart.base_chart.ying_line);
+    if (template.primary) {
+      pushEvidence(buildMissingPrimaryNode(input.scenario, template.primary), counterEvidence);
+    }
     pushEvidence(buildNode("B-SY-001", {
       lineRefs: [shiLine.line_no, yingLine.line_no],
       premise: `${input.scenario}场景暂不强行指定主用神。`,
-      conclusion: `以世爻${shiLine.line_no}与应爻${yingLine.line_no}作为学习型观察。`,
+      conclusion: `以世爻${shiLine.line_no}${shiLine.liuqin}${shiLine.branch}与应爻${yingLine.line_no}${yingLine.liuqin}${yingLine.branch}作为辅助观察。`,
       polarity: "neutral",
       confidence: "中",
     }));
-    pushEvidence(buildNode("B-DV-001", {
-      lineRefs: input.chart.lines.filter((line) => line.moving).map((line) => line.line_no),
-      premise: "未指定主用神时，动爻只作为局面变化提示。",
-      conclusion: input.chart.lines.some((line) => line.moving) ? "本卦存在动爻，可作变化观察。" : "本卦无动爻，变化提示较弱。",
-      polarity: "neutral",
-      confidence: "中",
-    }));
-    pushEvidence(buildNode("B-HC-001", {
-      lineRefs: [shiLine.line_no],
-      premise: `日辰${input.dateContext.day_ganzhi}，月建${input.dateContext.month_branch}。`,
-      conclusion: "时间因素仅用于学习展示，不输出明确趋向。",
-      polarity: "neutral",
-      confidence: "中",
-    }));
+    pushAuxiliaryEvidence(template, input.chart, pushEvidence);
+    pushCommonLineEvidence(input.chart, input.dateContext.month_branch, pushEvidence);
   }
 
   return {
@@ -209,7 +203,7 @@ export function analyzeRules(input: RuleAnalysisInput): RuleAnalysisResult {
     yongshen,
     evidence_tree: evidence,
     counter_evidence: counterEvidence,
-    verdict: buildVerdict(evidence, counterEvidence, yongshen),
+    verdict: buildVerdict(input.scenario, evidence, counterEvidence, yongshen),
     action_tips: buildActionTips(input.scenario),
     safety_notice: input.safety.notice,
   };
@@ -277,6 +271,97 @@ function buildAlternatives(chart: CastChartResult, liuqinNames: LiuqinName[]): Y
       branch: line.branch as BranchName,
       role: "辅助观察",
     }));
+}
+
+function buildHexagramNode(chart: CastChartResult): Omit<EvidenceNode, "id"> {
+  const sameChart = chart.base_chart.name === chart.changed_chart.name;
+  return buildNode("B-SY-001", {
+    lineRefs: [],
+    premise: `本卦为${chart.base_chart.name}，变卦为${chart.changed_chart.name}。`,
+    conclusion: sameChart
+      ? `本卦、变卦同为${chart.base_chart.name}，先按本卦整体卦意观察。`
+      : `本卦${chart.base_chart.name}变${chart.changed_chart.name}，需要同时看变化方向。`,
+    polarity: sameChart ? "+" : "neutral",
+    confidence: "中",
+  });
+}
+
+function buildStaticChangeNode(chart: CastChartResult): Omit<EvidenceNode, "id"> {
+  const movingLines = chart.lines.filter((line) => line.moving).map((line) => line.line_no);
+  return buildNode("B-DV-001", {
+    lineRefs: movingLines,
+    premise: "观察六爻是否发动，以及本卦到变卦是否改变。",
+    conclusion:
+      movingLines.length === 0
+        ? `本卦无动爻，是静卦；事情变化不大，更看原有基础和临场稳定。`
+        : `本卦有${movingLines.join("、")}爻发动，需要把动爻作为变化重点。`,
+    polarity: movingLines.length === 0 ? "neutral" : "+",
+    confidence: "中",
+  });
+}
+
+function buildMissingPrimaryNode(scenario: Scenario, primary: LiuqinName): Omit<EvidenceNode, "id"> {
+  const conclusion =
+    scenario === "考试" && primary === "父母"
+      ? "考试主看父母爻，当前卦盘父母不显，成绩、卷面或通过文书这条线不够明朗，不能断成确定通过。"
+      : `${scenario}场景主看${primary}，当前卦盘${primary}不显，主线需要保留不确定性。`;
+  return buildNode("B-YS-001", {
+    lineRefs: [],
+    premise: `${scenario}场景主用神为${primary}，但六爻明盘未见${primary}。`,
+    conclusion,
+    polarity: "-",
+    confidence: "中",
+  });
+}
+
+function pushAuxiliaryEvidence(
+  template: ScenarioTemplate,
+  chart: CastChartResult,
+  pushEvidence: (node: Omit<EvidenceNode, "id">, target?: EvidenceNode[]) => void,
+): void {
+  template.auxiliary.forEach((liuqin) => {
+    chart.lines
+      .filter((line) => line.liuqin === liuqin)
+      .forEach((line) => {
+        pushEvidence(buildNode("B-YS-001", {
+          lineRefs: [line.line_no],
+          premise: `主用神不显时，参考辅助观察爻${liuqin}。`,
+          conclusion:
+            liuqin === "官鬼"
+              ? `官鬼在${line.line_no}爻${line.stem}${line.branch}，可看作考试压力、规则和题目难度的线索。`
+              : `${liuqin}在${line.line_no}爻${line.stem}${line.branch}，作为辅助线索。`,
+          polarity: liuqin === "官鬼" ? "-" : "neutral",
+          confidence: "中",
+        }));
+      });
+  });
+}
+
+function pushCommonLineEvidence(
+  chart: CastChartResult,
+  monthBranch: BranchName,
+  pushEvidence: (node: Omit<EvidenceNode, "id">, target?: EvidenceNode[]) => void,
+): void {
+  const shiLine = getLine(chart, chart.base_chart.shi_line);
+  const monthElement = BRANCH_ELEMENTS[monthBranch];
+  const shiElement = BRANCH_ELEMENTS[shiLine.branch as BranchName];
+  const monthRelation = getElementRelation(monthElement, shiElement);
+  pushEvidence(buildNode("B-SY-001", {
+    lineRefs: [shiLine.line_no],
+    premise: `世爻代表求测者，当前世爻为${shiLine.line_no}爻${shiLine.liuqin}${shiLine.stem}${shiLine.branch}，临${shiLine.liushen}。`,
+    conclusion: `世爻${shiLine.line_no}${shiLine.liuqin}${shiLine.branch}临${shiLine.liushen}，月建${monthBranch}与世爻关系为：${monthRelation.conclusion}`,
+    polarity: monthRelation.polarity,
+    confidence: "中",
+  }));
+  if (shiLine.liushen === "腾蛇") {
+    pushEvidence(buildNode("B-SY-001", {
+      lineRefs: [shiLine.line_no],
+      premise: `世爻临${shiLine.liushen}。`,
+      conclusion: "世爻临腾蛇，容易紧张、纠结或反复怀疑，需要把心态和节奏作为重点。",
+      polarity: "-",
+      confidence: "中",
+    }));
+  }
 }
 
 function buildMonthNode(yongshen: YongshenSelection, monthBranch: BranchName): Omit<EvidenceNode, "id"> {
@@ -408,11 +493,22 @@ function getElementRelation(source: ElementName, target: ElementName): { polarit
 }
 
 function buildVerdict(
+  scenario: Scenario,
   evidence: EvidenceNode[],
   counterEvidence: EvidenceNode[],
   yongshen: YongshenSelection | null,
 ): RuleAnalysisResult["verdict"] {
   if (!yongshen) {
+    if (scenario === "考试") {
+      const hasSupportiveTai = evidence.some((node) => node.conclusion.includes("地天泰"));
+      return {
+        tendency: hasSupportiveTai ? "mixed" : "learning_only",
+        confidence: "中",
+        summary: hasSupportiveTai
+          ? "卦象有通达之意，过关机会偏大，但父母不显且有压力线索，不宜说成确定通过。"
+          : "考试主线不够明朗，适合把卦盘当作复习与临场提醒。",
+      };
+    }
     return {
       tendency: "learning_only",
       confidence: "中",
@@ -445,12 +541,15 @@ function buildActionTips(scenario: Scenario): string[] {
       : scenario === "财务"
         ? "财务问题应先核对预算、风险承受能力和专业建议。"
         : scenario === "考试"
-          ? "考试问题可优先转化为复习计划、材料准备和时间安排。"
+          ? "今晚别乱翻太多新内容，优先顺重点题型、易错点、公式和概念。"
           : scenario === "感情"
             ? "关系问题应保留双方意愿和现实沟通空间。"
             : scenario === "失物"
               ? "失物问题可同步回忆时间线、地点和实际查找路径。"
               : "可先把问题改写得更具体，再观察世应和动爻。";
+  if (scenario === "考试") {
+    return [scenarioTip, "明天先做会的题，不要被难题拖住节奏；检查时重点防粗心。", commonTip];
+  }
   return [scenarioTip, commonTip];
 }
 

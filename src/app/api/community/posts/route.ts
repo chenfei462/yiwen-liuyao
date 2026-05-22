@@ -3,12 +3,12 @@ import { ZodError } from "zod";
 import { createCommunityPost, listCommunityPosts } from "@/domain/reading-service";
 
 export async function GET() {
-  return NextResponse.json({ posts: listCommunityPosts() });
+  return NextResponse.json({ posts: await listCommunityPosts() });
 }
 
 export async function POST(request: Request) {
   try {
-    return NextResponse.json({ post: createCommunityPost(await request.json()) });
+    return NextResponse.json({ post: await createCommunityPost(await request.json()) });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

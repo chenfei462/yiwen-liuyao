@@ -33,8 +33,8 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     resetReadingStoreForTests();
   });
 
-  test("registers devices, updates push settings, and exposes app bootstrap capabilities", () => {
-    const device = registerDevice({
+  test("registers devices, updates push settings, and exposes app bootstrap capabilities", async () => {
+    const device = await registerDevice({
       anonymous_id: "anon-v2",
       platform: "mini_program",
       app_version: "2.0.0",
@@ -44,7 +44,7 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(device.capabilities).toContain("offline_cache");
     expect(device.safety_policy_version).toBe("v2.0");
 
-    const push = updatePushSettings({
+    const push = await updatePushSettings({
       device_id: device.device_id,
       enabled: true,
       learning_reminders: true,
@@ -52,7 +52,7 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     });
     expect(push.enabled).toBe(true);
 
-    const bootstrap = getAppBootstrap({ platform: "ios", anonymous_id: "anon-v2" });
+    const bootstrap = await getAppBootstrap({ platform: "ios", anonymous_id: "anon-v2" });
     expect(bootstrap.platform).toBe("ios");
     expect(bootstrap.feature_flags).toMatchObject({
       voice_reading: true,
@@ -63,7 +63,7 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
   });
 
   test("transcribes voice without storing raw audio and blocks high-risk voice questions", async () => {
-    const allowed = transcribeVoice({
+    const allowed = await transcribeVoice({
       audio_text: "这次考试如何复盘",
       platform: "ios",
       save_audio: false,
@@ -71,9 +71,9 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(allowed.status).toBe("completed");
     expect(allowed.transcript).toContain("考试");
     expect(allowed.raw_audio_stored).toBe(false);
-    expect(getVoiceJob(allowed.job_id).transcript).toBe(allowed.transcript);
+    expect((await getVoiceJob(allowed.job_id)).transcript).toBe(allowed.transcript);
 
-    const reading = initReading({
+    const reading = await initReading({
       question: "这次考试如何复盘",
       scenario,
       timezone: "Asia/Shanghai",
@@ -86,7 +86,7 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(explain.status).toBe("completed");
     expect(explain.audio_url).toBeNull();
 
-    const blocked = transcribeVoice({
+    const blocked = await transcribeVoice({
       audio_text: "我想自杀，卦能不能告诉我怎么结束生命",
       platform: "android",
       save_audio: true,
@@ -95,8 +95,8 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(blocked.raw_audio_stored).toBe(false);
   });
 
-  test("previews and accepts structured or pasted reading imports without AI-generated chart facts", () => {
-    const preview = previewReadingImport({
+  test("previews and accepts structured or pasted reading imports without AI-generated chart facts", async () => {
+    const preview = await previewReadingImport({
       source_type: "structured_json",
       payload: {
         question: "导入卦例复盘",
@@ -109,7 +109,7 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(preview.editable_fields.line_values).toEqual([7, 8, 7, 8, 9, 6]);
     expect(preview.ai_generated_chart_fields).toBe(false);
 
-    const imported = createReadingImport({
+    const imported = await createReadingImport({
       source_type: "pasted_text",
       payload: "lines: 7 8 7 8 9 6; scenario: 事业; question: 导入复盘; date: 2026-05-01",
     });
@@ -117,11 +117,11 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(imported.reading_id).toMatch(/^reading_/);
     expect(imported.chart_json).toBeTruthy();
 
-    const accepted = patchReadingImport(imported.import_id, { status: "accepted" });
+    const accepted = await patchReadingImport(imported.import_id, { status: "accepted" });
     expect(accepted.status).toBe("accepted");
-    expect(getReadingImport(imported.import_id).status).toBe("accepted");
+    expect((await getReadingImport(imported.import_id)).status).toBe("accepted");
 
-    const missing = previewReadingImport({
+    const missing = await previewReadingImport({
       source_type: "structured_json",
       payload: { scenario },
     });
@@ -129,67 +129,67 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
     expect(missing.errors.length).toBeGreaterThan(0);
   });
 
-  test("keeps community posts private until review and blocks high-risk readings", () => {
-    const reading = initReading({
+  test("keeps community posts private until review and blocks high-risk readings", async () => {
+    const reading = await initReading({
       question: "这次面试如何复盘更稳妥",
       scenario,
       timezone: "Asia/Shanghai",
     });
-    const post = createCommunityPost({
+    const post = await createCommunityPost({
       post_type: "case_discussion",
       title: "脱敏卦例讨论",
       body: "只讨论证据树，不展示原始问题。",
       reading_id: reading.reading_id,
     });
     expect(post.status).toBe("pending_review");
-    expect(listCommunityPosts().some((item) => item.id === post.id)).toBe(false);
+    expect((((await listCommunityPosts()).some((item) => item.id === post.id)))).toBe(false);
 
-    createAdminReview({
+    await createAdminReview({
       target_type: "community_post",
       target_id: post.id,
       review_type: "compliance",
       decision: "approved",
       note: "脱敏通过。",
     });
-    const published = getCommunityPost(post.id);
+    const published = await getCommunityPost(post.id);
     expect(published.status).toBe("published");
-    expect(published.question_preview).toBe("问题已脱敏");
-    expect(listCommunityPosts().some((item) => item.id === post.id)).toBe(true);
+    expect(published.question_preview).toBe("redacted");
+    expect((((await listCommunityPosts()).some((item) => item.id === post.id)))).toBe(true);
 
-    const comment = createCommunityComment({
+    const comment = await createCommunityComment({
       post_id: post.id,
       body: "这条规则可以回看用神卡。",
     });
     expect(comment.status).toBe("published");
 
-    const report = reportCommunityContent({
+    const report = await reportCommunityContent({
       target_type: "post",
       target_id: post.id,
       reason: "unsafe",
     });
     expect(report.status).toBe("pending_review");
-    expect(listReviewQueue().some((item) => "target_id" in item && item.target_id === post.id)).toBe(true);
+    expect((((await listReviewQueue()).some((item) => "target_id" in item && item.target_id === post.id)))).toBe(true);
 
-    const blockedReading = initReading({
+    const blockedReading = await initReading({
       question: "我想自杀，能不能发社区求卦",
       scenario,
       timezone: "Asia/Shanghai",
     });
-    expect(() =>
+    await expect(
       createCommunityPost({
         post_type: "case_discussion",
-        title: "高风险问题",
-        body: "请求公开。",
+        title: "redacted",
+        body: "redacted",
         reading_id: blockedReading.reading_id,
       }),
-    ).toThrow(/High-risk readings cannot be published/);
+    ).rejects.toThrow(/High-risk readings cannot be published/);
   });
 
-  test("requires reviewed rule packs before public use and supports rollback through deprecation", () => {
-    const seedPacks = listRulePacks();
+  test("requires reviewed rule packs before public use and supports rollback through deprecation", async () => {
+    const seedPacks = await listRulePacks();
     expect(seedPacks.every((item) => item.status === "approved")).toBe(true);
 
-    const pack = upsertRulePack({
+    const pack = await upsertRulePack({
       name: "用神模板扩展",
       scope: "yongshen",
       status: "testing",
@@ -198,18 +198,18 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
       validation_case_ids: ["case-001"],
       source_refs: ["internal-v2"],
     });
-    expect(listRulePacks().some((item) => item.id === pack.id)).toBe(false);
+    expect((((await listRulePacks()).some((item) => item.id === pack.id)))).toBe(false);
 
-    expect(() => patchRulePack(pack.id, { status: "approved", regression_passed: false })).toThrow(/regression/);
+    await expect(patchRulePack(pack.id, { status: "approved", regression_passed: false })).rejects.toThrow(/regression/);
 
-    createAdminReview({
+    await createAdminReview({
       target_type: "rule_pack",
       target_id: pack.id,
       review_type: "professional",
       decision: "approved",
       note: "专业审核通过。",
     });
-    createAdminReview({
+    await createAdminReview({
       target_type: "rule_pack",
       target_id: pack.id,
       review_type: "compliance",
@@ -217,13 +217,13 @@ describe("V2.0 multi-platform, voice, import, community, and governance service"
       note: "合规审核通过。",
     });
 
-    const approved = patchRulePack(pack.id, { status: "approved", regression_passed: true });
+    const approved = await patchRulePack(pack.id, { status: "approved", regression_passed: true });
     expect(approved.status).toBe("approved");
-    expect(getRulePack(pack.id).rule_pack_id).toBe(pack.id);
-    expect(listRulePacks().some((item) => item.id === pack.id)).toBe(true);
+    expect(((await getRulePack(pack.id)).rule_pack_id)).toBe(pack.id);
+    expect((((await listRulePacks()).some((item) => item.id === pack.id)))).toBe(true);
 
-    const deprecated = patchRulePack(pack.id, { status: "deprecated" });
+    const deprecated = await patchRulePack(pack.id, { status: "deprecated" });
     expect(deprecated.status).toBe("deprecated");
-    expect(listRulePacks().some((item) => item.id === pack.id)).toBe(false);
+    expect((((await listRulePacks()).some((item) => item.id === pack.id)))).toBe(false);
   });
 });

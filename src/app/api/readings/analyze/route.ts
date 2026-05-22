@@ -5,7 +5,7 @@ import { analyzeReading } from "@/domain/reading-service";
 export async function POST(request: Request) {
   try {
     const payload = await request.json();
-    return NextResponse.json(analyzeReading(payload));
+    return NextResponse.json(await analyzeReading(payload));
   } catch (error) {
     return toErrorResponse(error);
   }

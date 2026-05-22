@@ -4,7 +4,7 @@ import { createReadingShare } from "@/domain/reading-service";
 
 export async function POST(request: Request) {
   try {
-    return NextResponse.json(createReadingShare(await request.json()));
+    return NextResponse.json(await createReadingShare(await request.json()));
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

@@ -1,5 +1,31 @@
 # V1.0 API 契约
 
+## Auth and authorization
+
+- Principals are `anonymous`, `user`, or `admin`.
+- `yiwen-liuyao-anonymous-id` identifies the device or experiment bucket only. It is not authentication.
+- `yiwen-liuyao-session` is an HttpOnly SameSite=Lax opaque session cookie.
+- `ADMIN_EMAILS` is a comma-separated allowlist. A logged-in user whose email is in the allowlist receives the `admin` role at request time.
+- Unsafe auth requests validate same-origin requests through the `Origin` header when it is present.
+- Auth failures use `401` when no authenticated user session exists and `403` when the user is authenticated but lacks the required role.
+
+Public auth routes:
+
+- `GET /api/auth/me`: returns `{ principal }` and sets an anonymous-id cookie when needed.
+- `POST /api/auth/register`: `{ email, password, anonymous_id? }`, creates a user, session cookie, and merges the anonymous principal audit trail.
+- `POST /api/auth/login`: `{ email, password, anonymous_id? }`, creates a session cookie and merges anonymous data audit trail.
+- `POST /api/auth/logout`: revokes the current session and clears the session cookie.
+- `POST /api/auth/email-verification`: requests a verification token or email.
+- `PATCH /api/auth/email-verification`: `{ token }`, marks the email verified.
+- `POST /api/auth/password-reset`: `{ email }`, requests a reset token or email.
+- `PATCH /api/auth/password-reset`: `{ token, password }`, resets the password and revokes existing sessions.
+
+Authorization:
+
+- `/api/admin/*`, including `ops`, `commercial`, `compliance`, and `ecosystem`, requires `admin`.
+- `/api/me/*`, history, favorites, tags, reading writes, and learning progress are scoped to the current principal.
+- Public share, catalog, bootstrap, public cases, and public rule-pack routes remain open.
+
 ## POST `/api/readings/init`
 
 请求：
@@ -41,9 +67,23 @@
 }
 ```
 
+时间起卦请求：
+
+```json
+{
+  "reading_id": "reading_uuid",
+  "cast_method": "time",
+  "cast_time": "2026-05-05",
+  "day_ganzhi": "己巳"
+}
+```
+
 说明：
 
 - `line_values` 固定 6 条，从初爻到上爻。
+- `cast_method = coin | manual | time`。
+- `coin/manual` 必须传 `line_values`，长度固定 6；`time` 允许不传 `line_values`。
+- `time` 起卦由服务端基于 `cast_time + day_ganzhi` 生成确定性 6 爻，适合作为轻量体验，不等同于传统铜钱法。
 - `day_ganzhi` 可选；显式传入时优先，否则由 `cast_time` 推导。
 - `month_branch` 可选；显式传入时优先，否则由 2024-2027 节气月建表推导。
 - `cast_time` 超出 2024-2027 且未传 `month_branch` 时返回 400。
@@ -373,7 +413,7 @@ SSE 事件：
 ## 固定枚举
 
 - `LineValue = 6 | 7 | 8 | 9`
-- `cast_method = coin | manual`
+- `cast_method = coin | manual | time`
 - `scenario = 事业 | 财务 | 感情 | 考试 | 失物 | 其他`
 - `mode = professional | light | learning | story`
 - `followup_type = why_yongshen | key_rule | counter_evidence | timing | learning_mode | free_text`
@@ -627,8 +667,8 @@ V3.5 keeps the platform in an operations-readiness and commercial-sandbox mode. 
 - `POST /api/me/privacy-settings`
   - Request: `{ save_history?, allow_personalization?, allow_sensitive_review?, retain_history_days?, export_format? }`
 - `POST /api/me/data-export`
-  - Response: `{ export_job }`
-  - Exports do not include raw question text or private followups.
+  - Response: `{ export_job: { id, status, export_format, includes_raw_question_text: false, includes_private_followups: false, download_url, created_at, completed_at? } }`
+  - Exports do not include raw question text, private followups, or user identifiers.
 - `GET /api/admin/compliance/reviews`
   - Response: `{ reviews }`
 - `POST /api/admin/compliance/reviews/[id]/resolve`

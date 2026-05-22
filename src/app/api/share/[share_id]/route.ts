@@ -4,7 +4,7 @@ import { getPublicShare } from "@/domain/reading-service";
 export async function GET(_request: Request, { params }: { params: Promise<{ share_id: string }> }) {
   try {
     const { share_id } = await params;
-    return NextResponse.json(getPublicShare(share_id));
+    return NextResponse.json(await getPublicShare(share_id));
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Share not found")) {
       return NextResponse.json({ error: "share_not_found" }, { status: 404 });

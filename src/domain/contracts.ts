@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EARTHLY_BRANCHES, HEAVENLY_STEMS, isDateSupportedByJieqiTable } from "./calendar";
 
 export const SCENARIOS = ["事业", "财务", "感情", "考试", "失物", "其他"] as const;
-export const CAST_METHODS = ["coin", "manual"] as const;
+export const CAST_METHODS = ["coin", "manual", "time"] as const;
 export const LINE_VALUES = [6, 7, 8, 9] as const;
 
 export const LineValueSchema = z.union([
@@ -32,12 +32,19 @@ export const CastRequestSchema = z
   .object({
     reading_id: z.string().trim().min(1),
     cast_method: z.enum(CAST_METHODS),
-    line_values: z.array(LineValueSchema).length(6, "line_values must contain exactly six bottom-to-top values"),
+    line_values: z.array(LineValueSchema).length(6, "line_values must contain exactly six bottom-to-top values").optional(),
     cast_time: CastTimeSchema.optional(),
     day_ganzhi: DayGanzhiSchema.optional(),
     month_branch: MonthBranchSchema.optional(),
   })
   .superRefine((value, context) => {
+    if (value.cast_method !== "time" && !value.line_values) {
+      context.addIssue({
+        code: "custom",
+        path: ["line_values"],
+        message: "line_values must contain exactly six bottom-to-top values",
+      });
+    }
     if (value.cast_time && !value.month_branch && !isDateSupportedByJieqiTable(value.cast_time)) {
       context.addIssue({
         code: "custom",

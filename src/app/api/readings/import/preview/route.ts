@@ -4,7 +4,7 @@ import { previewReadingImport } from "@/domain/reading-service";
 
 export async function POST(request: Request) {
   try {
-    return NextResponse.json({ import_preview: previewReadingImport(await request.json()) });
+    return NextResponse.json({ import_preview: await previewReadingImport(await request.json()) });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

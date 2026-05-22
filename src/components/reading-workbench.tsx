@@ -3,7 +3,11 @@
 import Image from "next/image";
 import {
   BookOpen,
+  Copy,
   Coins,
+  Download,
+  Eye,
+  FileText,
   History,
   MessageCircle,
   Mic,
@@ -14,10 +18,8 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
-  Share2,
   Smartphone,
   Star,
-  Tags,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -26,10 +28,11 @@ import {
   Upload,
   Users,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type LineValue = 6 | 7 | 8 | 9;
-type CastMethod = "coin" | "manual";
+type CastMethod = "coin" | "manual" | "time";
+type WorkbenchModule = "cast" | "learning" | "history" | "growth" | "community" | "privacy";
 type SafetyStatus = {
   status: "allowed" | "blocked";
   risk_label: string;
@@ -155,6 +158,35 @@ type AiStreamEvent =
   | { type: "delta"; data: AiDelta }
   | { type: "final"; data: AiReadingOutput }
   | { type: "error"; data: { error: string } };
+type LearningContext = {
+  scenario: (typeof scenarios)[number];
+  ruleId?: string;
+  term?: string;
+  difficulty?: LearningExercise["difficulty"];
+};
+type LearningPathSectionId = "foundation" | "symbols" | "strength" | "evidence" | "practice";
+export type LearningPathNode = {
+  id: string;
+  sectionId: LearningPathSectionId;
+  title: string;
+  term: string;
+  ruleId: string;
+  summary: string;
+  core: string;
+  example: string;
+  counterExample: string;
+  practicePrompt: string;
+  scenario: (typeof scenarios)[number];
+  difficulty: LearningExercise["difficulty"];
+};
+type LearningPathSection = {
+  id: LearningPathSectionId;
+  title: string;
+  summary: string;
+};
+export type LearningNodeStatus = "locked" | "current" | "completed";
+type EvidenceSectionId = "keyEvidence" | "counterEvidence" | "actionTips";
+type EvidenceExpansionState = Record<EvidenceSectionId, boolean>;
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -164,7 +196,10 @@ type LearningTerm = {
   id: string;
   term: string;
   rule_id: string;
+  scenario?: string;
   definition: string;
+  example?: string;
+  counter_example?: string;
   source_refs: string[];
   status: "draft" | "approved" | "rejected";
 };
@@ -182,17 +217,6 @@ type LearningCardDetail = KnowledgeCard & {
   counter_example: string;
   safety_notice: string;
 };
-type ShareResult = {
-  share_id: string;
-  share_url: string;
-  card_payload: {
-    base_chart: string;
-    changed_chart: string;
-    question_preview: string;
-    key_points: string[];
-    safety_notice: string;
-  };
-};
 type MemberProgress = {
   membership: {
     tier: "free" | "member";
@@ -201,6 +225,14 @@ type MemberProgress = {
   favorites: string[];
   tags: Record<string, string[]>;
   learning_progress: Array<{ subject_id: string; subject_type: string; badge?: string; score?: number }>;
+};
+type AuthPrincipal = {
+  kind: "anonymous" | "user" | "admin";
+  user_id: string | null;
+  anonymous_id: string | null;
+  email: string | null;
+  roles: Array<"user" | "admin">;
+  session_id: string | null;
 };
 type AdminMetrics = {
   reading_count: number;
@@ -289,6 +321,13 @@ type CreatorExportResult = {
   content_sections: string[];
   source_refs: string[];
   safety_notice: string;
+};
+type CreatorExportType = CreatorExportResult["export_type"];
+type CreatorSourceType = "reading" | "case";
+type CreatorMaterialRequest = {
+  sourceType: CreatorSourceType;
+  exportType: CreatorExportType;
+  caseId?: string;
 };
 type ExperimentAssignment = {
   experiment_id: string;
@@ -604,10 +643,10 @@ type PrivacySettings = {
 
 type PrivacyDataExport = {
   id: string;
-  user_id: string;
   status: "queued" | "processing" | "completed" | "failed";
   export_format: "json" | "csv";
   includes_raw_question_text: false;
+  includes_private_followups: false;
   download_url: string;
   created_at: string;
   completed_at?: string;
@@ -634,8 +673,8 @@ const lineOptions: Array<{ value: LineValue; label: string; hint: string }> = [
   { value: 9, label: "9 老阳", hint: "阳爻，动" },
 ];
 const explainModes: Array<{ value: ExplainMode; label: string }> = [
+  { value: "light", label: "大白话" },
   { value: "professional", label: "专业版" },
-  { value: "light", label: "轻松版" },
   { value: "learning", label: "学习版" },
   { value: "story", label: "剧情版" },
 ];
@@ -647,7 +686,471 @@ const followupPrompts: Array<{ type: FollowupType; label: string; message: strin
   { type: "learning_mode", label: "学习模式解释", message: "换成学习模式解释。" },
 ];
 
+const moduleLinks = [
+  { id: "cast", label: "起卦", icon: PenLine },
+  { id: "learning", label: "学习", icon: GraduationCap },
+  { id: "history", label: "历史", icon: History },
+  { id: "growth", label: "案例", icon: BookOpen },
+  { id: "community", label: "社区", icon: Users },
+  { id: "privacy", label: "隐私设置", icon: ShieldCheck },
+] as const;
+
+const creatorMaterialTypes: Array<{ value: CreatorExportType; label: string; description: string }> = [
+  { value: "article", label: "图文提纲", description: "适合公众号、小红书或课程讲义。" },
+  { value: "short_video_script", label: "短视频脚本", description: "适合口播、分镜和结尾提示。" },
+  { value: "long_image", label: "长图结构", description: "适合知识卡长图和图文拆解。" },
+  { value: "chart_snapshot", label: "排盘图结构稿", description: "输出可复制的排盘信息结构。" },
+];
+
+export const learningPathSections: LearningPathSection[] = [
+  { id: "foundation", title: "入门基础", summary: "先把起卦、阴阳动静、用神、世应、日月、动变建立起来。" },
+  { id: "symbols", title: "六亲取象", summary: "理解父母、兄弟、子孙、妻财、官鬼在不同场景里的角色。" },
+  { id: "strength", title: "旺衰生克", summary: "学习月建、日辰、旬空、冲破等怎样影响证据强弱。" },
+  { id: "evidence", title: "证据树读法", summary: "把支持、反证、置信度和安全边界组织成可复盘的判断。" },
+  { id: "practice", title: "场景实战", summary: "用事业、财务、感情、考试、失物和独立读盘做综合练习。" },
+];
+
+export const learningPathNodes: LearningPathNode[] = [
+  {
+    id: "learn-cast-values",
+    sectionId: "foundation",
+    title: "起卦四值",
+    term: "起卦",
+    ruleId: "B-YS-001",
+    summary: "先认识 6、7、8、9 四种爻值，区分阴阳、动静和从初爻到上爻的顺序。",
+    core: "三枚铜钱相加只会得到 6、7、8、9。6 与 8 属阴，7 与 9 属阳；6 与 9 是动爻，会生成变卦。",
+    example: "三枚全背为 6 老阴，一正两背为 7 少阳，两正一背为 8 少阴，三枚全正为 9 老阳。",
+    counterExample: "不要把 7、8 看成低级结果，它们是最常见的静爻，概率本来就高。",
+    practicePrompt: "请说出 6、7、8、9 分别对应阴阳和动静。",
+    scenario: "事业",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-yin-yang-moving",
+    sectionId: "foundation",
+    title: "阴阳动静",
+    term: "动爻",
+    ruleId: "B-DV-001",
+    summary: "理解少阴少阳是静爻，老阴老阳是动爻，后续证据树会优先关注变化线索。",
+    core: "静爻看当前结构，动爻看变化方向。动爻不一定代表好坏，它只说明这条线正在变化，需要接着看变爻。",
+    example: "用神发动时，先看它变出什么，再看变爻对用神是回头生、回头克还是泄耗。",
+    counterExample: "不能看到动爻就直接判断事情一定会成，也不能看到静爻就认为毫无变化。",
+    practicePrompt: "从一个有动爻的卦里指出哪条是变化线索，并说明为什么。",
+    scenario: "其他",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-yongshen",
+    sectionId: "foundation",
+    title: "取用神",
+    term: "用神",
+    ruleId: "B-YS-001",
+    summary: "把问题类型转成主观察对象，例如事业常看官鬼，财务常看妻财。",
+    core: "用神是本次问题的主观察对象。先确定问题类型，再把它映射到六亲、世应或具体爻位。",
+    example: "求职面试常以官鬼为岗位和录取压力，同时参考父母文书、世应互动。",
+    counterExample: "不能所有问题都固定看一个用神；财务、考试、感情、失物的主线不同。",
+    practicePrompt: "给出事业、财务、考试三个问题，分别选出最优先观察的用神。",
+    scenario: "事业",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-shiying",
+    sectionId: "foundation",
+    title: "世应关系",
+    term: "世应",
+    ruleId: "B-SY-001",
+    summary: "用世爻和应爻观察自己、对方或外部环境之间的互动。",
+    core: "世爻常看自己或提问者，应爻常看对方、外部环境或事情所面对的一端。",
+    example: "感情问题里，世应相生可视作互动顺畅，世应相冲则提示关系张力。",
+    counterExample: "不能只凭世应相生就保证关系成功，还要看用神、动爻和现实边界。",
+    practicePrompt: "指出世爻和应爻分别代表什么，并描述两者互动。",
+    scenario: "感情",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-day-month",
+    sectionId: "foundation",
+    title: "日月旺衰",
+    term: "月建",
+    ruleId: "B-WR-001",
+    summary: "用月建看阶段环境，用日辰看短期触发，不单凭一项下结论。",
+    core: "月建像阶段环境，日辰像短期触发。用神得月日生扶通常更有力，受冲克则要保留。",
+    example: "用神临月建或得月生日扶，可作为强证据；同时被动爻克制则要加入反证。",
+    counterExample: "不能只看月建旺就下结论，动变、空亡、世应都会改变判断。",
+    practicePrompt: "判断一个用神是否得月日支持，并写出支持或削弱理由。",
+    scenario: "考试",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-moving-change",
+    sectionId: "foundation",
+    title: "动爻变爻",
+    term: "变爻",
+    ruleId: "B-DV-001",
+    summary: "观察动爻带来的变化、回头生克和反证，形成更完整的学习判断。",
+    core: "动爻生成变爻，变爻用来观察事情下一步走向。重点看它对用神、世应和原局的影响。",
+    example: "用神发动化回头生，是增强线索；化回头克，则是明显保留。",
+    counterExample: "不能只看变卦名字断事，必须回到具体动爻和变爻关系。",
+    practicePrompt: "选一条动爻，说明它变出后对用神是增强还是削弱。",
+    scenario: "财务",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-six-relatives",
+    sectionId: "symbols",
+    title: "六亲总览",
+    term: "六亲",
+    ruleId: "B-YS-001",
+    summary: "认识父母、兄弟、子孙、妻财、官鬼在不同问题里的常见含义。",
+    core: "六亲不是固定吉凶，而是把现实问题拆成角色：文书、竞争、产出、资源、压力。",
+    example: "考试看父母文书，求财看妻财资源，求职看官鬼岗位。",
+    counterExample: "不能看到官鬼就只理解为坏事，求职场景里它可能正是岗位和录取压力。",
+    practicePrompt: "把父母、兄弟、子孙、妻财、官鬼各写一个现实含义。",
+    scenario: "其他",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-fumu-docs",
+    sectionId: "symbols",
+    title: "父母与文书",
+    term: "父母",
+    ruleId: "B-YS-001",
+    summary: "父母常对应材料、证件、流程、规则、学习内容和保护性资源。",
+    core: "父母爻常看文书、手续、证件、合同、学习材料，也可看流程是否顺畅。",
+    example: "考试、面试材料、合同流程中，父母旺相可提示文书线索较稳。",
+    counterExample: "不能把父母旺直接等同成功，还要看主用神是否受益。",
+    practicePrompt: "在考试问题里说明为什么父母爻重要。",
+    scenario: "考试",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-brothers-competition",
+    sectionId: "symbols",
+    title: "兄弟与竞争",
+    term: "兄弟",
+    ruleId: "B-YS-001",
+    summary: "兄弟常看同类、竞争者、分走资源的人或成本消耗。",
+    core: "兄弟不一定是坏，但在求财和竞争场景里常代表消耗、分担或同类竞争。",
+    example: "求财时兄弟旺，可能提示成本、分账或竞争者强。",
+    counterExample: "合作问题里兄弟也可能代表同伴支持，不能机械判凶。",
+    practicePrompt: "说明求财和合作场景中兄弟含义有什么不同。",
+    scenario: "财务",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-zisun-output",
+    sectionId: "symbols",
+    title: "子孙与产出",
+    term: "子孙",
+    ruleId: "B-DV-001",
+    summary: "子孙常看产出、表达、方案、结果呈现，也可制约官鬼压力。",
+    core: "子孙代表表达、成果、创造、放松，也常用来观察能否化解官鬼压力。",
+    example: "面试中子孙可看表达发挥，考试中可看作答输出。",
+    counterExample: "子孙强不一定万事顺利，如果它克制了需要的官鬼线索，也要谨慎。",
+    practicePrompt: "在面试问题里找出子孙可能代表的现实动作。",
+    scenario: "事业",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-caixing-resource",
+    sectionId: "symbols",
+    title: "妻财与资源",
+    term: "妻财",
+    ruleId: "B-YS-001",
+    summary: "妻财常看钱、资源、物品、收益、客户，也可能是感情问题中的对象线索。",
+    core: "妻财在财务和失物问题里常是主线，在其他场景里可代表资源和可获得物。",
+    example: "问奖金、项目回款、丢失物品时，妻财爻通常优先进入证据树。",
+    counterExample: "感情问题不能默认妻财就是唯一对象，要结合提问者身份和世应。",
+    practicePrompt: "给出财务和失物两个场景，说明妻财各自代表什么。",
+    scenario: "财务",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-guangui-pressure",
+    sectionId: "symbols",
+    title: "官鬼与压力",
+    term: "官鬼",
+    ruleId: "B-YS-001",
+    summary: "官鬼可看岗位、规则、压力、疾病风险、约束，具体含义随场景变化。",
+    core: "官鬼不是固定坏词。事业可看岗位，考试可看压力，风险问题则需谨慎提示。",
+    example: "求职看官鬼为岗位和录用标准，官鬼得生可能代表岗位线索较清楚。",
+    counterExample: "不能把官鬼旺直接说成一定升职，现实流程仍需验证。",
+    practicePrompt: "解释为什么事业场景会优先看官鬼。",
+    scenario: "事业",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-wuxing-birth",
+    sectionId: "strength",
+    title: "五行生克",
+    term: "生克",
+    ruleId: "B-WR-001",
+    summary: "用五行生克理解支持、消耗、制约和阻力的基础关系。",
+    core: "相生表示支持或转化，相克表示约束或冲突。它是证据，不是单独结论。",
+    example: "月建生用神，可记为环境支持；忌神克用神，可记为压力来源。",
+    counterExample: "不能把相克一律判坏，有些问题需要克制风险或约束过强因素。",
+    practicePrompt: "写出一个相生支持和一个相克制约的例子。",
+    scenario: "其他",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-wangshuai-source",
+    sectionId: "strength",
+    title: "旺衰来源",
+    term: "旺衰",
+    ruleId: "B-WR-001",
+    summary: "分清月建、日辰、动爻、变爻分别从哪里给用神加分或减分。",
+    core: "旺衰不是单一分数，而是多条来源叠加：月日、动变、空破、合冲都可能影响。",
+    example: "用神得月生但被动爻克，结论应写成有基础但存在阻力。",
+    counterExample: "不能只凭一个旺字忽略反证。",
+    practicePrompt: "列出判断旺衰时至少三种需要检查的来源。",
+    scenario: "考试",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-month-branch",
+    sectionId: "strength",
+    title: "月建环境",
+    term: "月建",
+    ruleId: "B-WR-001",
+    summary: "月建代表当前阶段的大环境，是判断用神是否得势的重要依据。",
+    core: "月建像季节和背景条件，常用于判断某条线索在当前阶段是否有力。",
+    example: "用神与月建同类或得月建生扶，通常可作为关键依据。",
+    counterExample: "月建强不代表马上发生，短期触发还要看日辰和动爻。",
+    practicePrompt: "说明月建和日辰在时间感上的差异。",
+    scenario: "其他",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-day-trigger",
+    sectionId: "strength",
+    title: "日辰触发",
+    term: "日辰",
+    ruleId: "B-HC-001",
+    summary: "日辰常看短期触发、冲合、填实和当天层面的影响。",
+    core: "日辰比月建更偏短期，适合观察当前触发点和细节变化。",
+    example: "用神旬空而日辰冲空，有时可作为短期被触发的学习线索。",
+    counterExample: "不能只用日辰推断长期趋势。",
+    practicePrompt: "找一个日辰对用神产生影响的例子。",
+    scenario: "其他",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-empty-void",
+    sectionId: "strength",
+    title: "旬空保留",
+    term: "旬空",
+    ruleId: "B-XK-001",
+    summary: "旬空提示线索暂时不实、不落地或需要等待条件补足。",
+    core: "关键爻落旬空时，通常要作为反证或保留，不宜直接给确定承诺。",
+    example: "用神旺但旬空，可写成有条件但暂未落实。",
+    counterExample: "不能见旬空就判无望，填实、冲空或后续动变可能改变。",
+    practicePrompt: "解释为什么旬空适合放在反证区。",
+    scenario: "其他",
+    difficulty: "advanced",
+  },
+  {
+    id: "learn-break-clash",
+    sectionId: "strength",
+    title: "冲破与摇动",
+    term: "冲破",
+    ruleId: "B-HC-001",
+    summary: "冲、破常提示不稳定、变化、冲突或原有结构被打开。",
+    core: "冲破不是固定坏，它提示关系被触动。要看被冲的是用神、忌神还是阻力。",
+    example: "忌神被冲，可能是阻力被打开；用神被冲，则可能是不稳。",
+    counterExample: "不能看到冲就统一判失败。",
+    practicePrompt: "区分用神被冲和忌神被冲的不同含义。",
+    scenario: "其他",
+    difficulty: "advanced",
+  },
+  {
+    id: "learn-evidence-order",
+    sectionId: "evidence",
+    title: "证据树顺序",
+    term: "证据树",
+    ruleId: "B-YS-001",
+    summary: "按问题类型、用神、旺衰、动变、反证的顺序组织判断。",
+    core: "证据树的目的不是堆术语，而是让用户知道每条判断从哪里来。",
+    example: "先写用神为什么选，再写它是否得月日，再写动变和反证。",
+    counterExample: "不能先给结论再硬找依据。",
+    practicePrompt: "把一次分析拆成三条关键依据和一条反证。",
+    scenario: "事业",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-key-counter",
+    sectionId: "evidence",
+    title: "关键依据与反证",
+    term: "反证",
+    ruleId: "B-XK-001",
+    summary: "学会同时展示支持判断的依据和需要保留的反向线索。",
+    core: "好学习页必须让用户看到为什么支持，也看到哪里不能过度确定。",
+    example: "用神得月生是支持，关键爻旬空就是保留。",
+    counterExample: "只展示支持证据会把学习变成占断承诺。",
+    practicePrompt: "为同一卦象写一条支持和一条保留。",
+    scenario: "其他",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-confidence",
+    sectionId: "evidence",
+    title: "置信度表达",
+    term: "置信度",
+    ruleId: "B-YS-001",
+    summary: "把证据强弱表达成倾向、保留和不确定，而不是绝对预测。",
+    core: "置信度来自证据数量、方向一致性和反证强弱。它帮助用户理解判断边界。",
+    example: "多条证据同向且反证弱，可写成倾向较强；证据混杂则写成需要观察。",
+    counterExample: "不能用 100% 或必然成败表达传统文化学习内容。",
+    practicePrompt: "把一句绝对判断改写成带置信度的表达。",
+    scenario: "其他",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-safety-boundary",
+    sectionId: "evidence",
+    title: "安全边界",
+    term: "安全",
+    ruleId: "B-YS-001",
+    summary: "医疗、法律、投资、自伤、未成年人等问题要优先安全提示。",
+    core: "学习功能不能诱导现实高风险决策。高风险问题只能做文化学习和问题整理。",
+    example: "投资问题应提示不构成建议，并鼓励咨询专业人士。",
+    counterExample: "不能承诺收益、疾病结果、诉讼结果或改运消灾。",
+    practicePrompt: "把一个高风险问题改写成安全的学习提示。",
+    scenario: "其他",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-ai-explain",
+    sectionId: "evidence",
+    title: "AI 解读读法",
+    term: "学习版",
+    ruleId: "B-YS-001",
+    summary: "理解大白话、专业版、学习版、剧情版的区别，重点看证据而非文风。",
+    core: "同一证据可用不同文风表达。学习时优先看规则编号、依据和反证。",
+    example: "学习版会解释为什么这条规则进入证据树，而不是只给结论。",
+    counterExample: "不要把文风更像真的当成证据更强。",
+    practicePrompt: "比较大白话和学习版，同一条证据有什么不同表达。",
+    scenario: "其他",
+    difficulty: "beginner",
+  },
+  {
+    id: "learn-review-reading",
+    sectionId: "evidence",
+    title: "复盘一卦",
+    term: "复盘",
+    ruleId: "B-YS-001",
+    summary: "用问题、卦盘、证据树、AI 解读和现实反馈做一次完整复盘。",
+    core: "复盘要记录当时问题、证据、现实动作和后续反馈，避免只记结论。",
+    example: "面试后记录流程推进、沟通反馈、准备动作，再回看证据是否合理。",
+    counterExample: "不能只在结果符合时说准，不符合时忽略反证。",
+    practicePrompt: "写一个复盘模板：问题、依据、反证、行动、反馈。",
+    scenario: "事业",
+    difficulty: "advanced",
+  },
+  {
+    id: "learn-career-case",
+    sectionId: "practice",
+    title: "事业案例",
+    term: "官鬼",
+    ruleId: "B-YS-001",
+    summary: "用官鬼、父母、世应、子孙四条线拆解事业与面试问题。",
+    core: "事业案例优先看岗位线索，再看材料流程、互动关系和表达发挥。",
+    example: "官鬼为岗位，父母为简历流程，子孙为表达输出，世应看双方互动。",
+    counterExample: "不能只看官鬼旺就说录用，流程和竞争仍需观察。",
+    practicePrompt: "按四条线拆解一个面试问题。",
+    scenario: "事业",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-money-case",
+    sectionId: "practice",
+    title: "财务案例",
+    term: "妻财",
+    ruleId: "B-YS-001",
+    summary: "用妻财、兄弟、子孙和日月观察资源、收益、成本和产出。",
+    core: "财务案例要同时看财爻是否有力、是否被兄弟耗、是否有产出来源。",
+    example: "财爻得生日扶但兄弟旺，可能是有机会但成本或分成较高。",
+    counterExample: "不能把财爻出现就说一定赚钱。",
+    practicePrompt: "写出求财问题的三条观察线。",
+    scenario: "财务",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-relationship-case",
+    sectionId: "practice",
+    title: "感情案例",
+    term: "世应",
+    ruleId: "B-SY-001",
+    summary: "用世应互动、用神选择和反证边界学习关系类问题。",
+    core: "感情案例更需要避免绝对承诺，重点看互动状态、沟通阻力和现实边界。",
+    example: "世应相生可作为互动顺畅，若关键爻旬空则要写保留。",
+    counterExample: "不能承诺对方一定回来、一定分手或一定结婚。",
+    practicePrompt: "把感情问题改写成学习型分析，不做承诺。",
+    scenario: "感情",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-exam-case",
+    sectionId: "practice",
+    title: "考试案例",
+    term: "父母",
+    ruleId: "B-YS-001",
+    summary: "用父母、官鬼、子孙和日月拆解考试、证书、文书问题。",
+    core: "考试案例常看父母文书和知识准备，官鬼看压力标准，子孙看作答输出。",
+    example: "父母旺且子孙有力，可写成材料和发挥都有支撑。",
+    counterExample: "不能把卦象当成替代复习或报名流程的依据。",
+    practicePrompt: "列出考试类问题的主线和辅助线。",
+    scenario: "考试",
+    difficulty: "intermediate",
+  },
+  {
+    id: "learn-lost-item-case",
+    sectionId: "practice",
+    title: "失物案例",
+    term: "失物",
+    ruleId: "B-YS-001",
+    summary: "用财爻、内外卦、动爻和空亡学习失物问题的观察方式。",
+    core: "失物案例要把卦象当作整理搜索线索的工具，而不是保证找回。",
+    example: "财爻在内卦可提示先查近处，动爻提示位置或状态变化。",
+    counterExample: "不能承诺一定找回，也不能让用户放弃现实查找。",
+    practicePrompt: "把失物问题拆成近处、远处、变化、现实行动四项。",
+    scenario: "失物",
+    difficulty: "advanced",
+  },
+  {
+    id: "learn-independent-reading",
+    sectionId: "practice",
+    title: "独立读盘",
+    term: "证据树",
+    ruleId: "B-YS-001",
+    summary: "完成一次从问题到证据树再到安全提示的完整独立练习。",
+    core: "独立读盘的目标是结构完整：问题分类、用神、旺衰、动变、反证、行动提示。",
+    example: "先写问题类型，再列三条依据、一条反证、两条现实行动。",
+    counterExample: "不能跳过反证和安全边界直接给断语。",
+    practicePrompt: "任选一个问题，写出完整学习型证据树。",
+    scenario: "其他",
+    difficulty: "advanced",
+  },
+];
+
+export const defaultEvidenceExpansion: EvidenceExpansionState = {
+  keyEvidence: false,
+  counterEvidence: false,
+  actionTips: false,
+};
+
+export function toggleEvidenceSection(
+  current: EvidenceExpansionState,
+  section: EvidenceSectionId,
+): EvidenceExpansionState {
+  return {
+    ...current,
+    [section]: !current[section],
+  };
+}
+
 export function ReadingWorkbench() {
+  const [activeModule, setActiveModule] = useState<WorkbenchModule>("cast");
   const [question, setQuestion] = useState("这次面试有没有机会");
   const [scenario, setScenario] = useState<(typeof scenarios)[number]>("事业");
   const [castDate, setCastDate] = useState("");
@@ -659,11 +1162,12 @@ export function ReadingWorkbench() {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null);
+  const [pendingDeleteHistory, setPendingDeleteHistory] = useState<HistoryItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [explainMode, setExplainMode] = useState<ExplainMode>("learning");
+  const [explainMode, setExplainMode] = useState<ExplainMode>("light");
   const [aiOutput, setAiOutput] = useState<AiReadingOutput | null>(null);
   const [aiDeltas, setAiDeltas] = useState<AiDelta[]>([]);
   const [knowledgeCards, setKnowledgeCards] = useState<KnowledgeCard[]>([]);
@@ -675,16 +1179,17 @@ export function ReadingWorkbench() {
   const [learningTerms, setLearningTerms] = useState<LearningTerm[]>([]);
   const [learningExercises, setLearningExercises] = useState<LearningExercise[]>([]);
   const [selectedLearningCard, setSelectedLearningCard] = useState<LearningCardDetail | null>(null);
+  const [selectedLearningNodeId, setSelectedLearningNodeId] = useState(learningPathNodes[0].id);
+  const [authPrincipal, setAuthPrincipal] = useState<AuthPrincipal | null>(null);
   const [memberProgress, setMemberProgress] = useState<MemberProgress | null>(null);
   const [adminMetrics, setAdminMetrics] = useState<AdminMetrics | null>(null);
-  const [shareResult, setShareResult] = useState<ShareResult | null>(null);
-  const [tagsText, setTagsText] = useState("复盘");
   const [isV1Loading, setIsV1Loading] = useState(false);
   const [v1Error, setV1Error] = useState<string | null>(null);
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [courseProgress, setCourseProgress] = useState<CourseProgressSummary | null>(null);
   const [creatorExport, setCreatorExport] = useState<CreatorExportResult | null>(null);
+  const [isCreatorGenerating, setIsCreatorGenerating] = useState(false);
   const [experimentAssignment, setExperimentAssignment] = useState<ExperimentAssignment | null>(null);
   const [isV15Loading, setIsV15Loading] = useState(false);
   const [v15Error, setV15Error] = useState<string | null>(null);
@@ -718,21 +1223,110 @@ export function ReadingWorkbench() {
   const [isV35Loading, setIsV35Loading] = useState(false);
   const [v35Error, setV35Error] = useState<string | null>(null);
 
-  const activeLineValues = castMethod === "coin" ? coinValues : manualValues;
-  const canCast = question.trim().length >= 2 && activeLineValues.length === 6 && !isLoading;
+  const activeLineValues = useMemo(
+    () => (castMethod === "coin" ? coinValues : castMethod === "manual" ? manualValues : []),
+    [castMethod, coinValues, manualValues],
+  );
+  const canCast = question.trim().length >= 2 && (castMethod === "time" || activeLineValues.length === 6) && !isLoading;
+  const learningNodeStatuses = useMemo(
+    () => getLearningNodeStatuses(learningPathNodes, memberProgress?.learning_progress ?? []),
+    [memberProgress],
+  );
+  const selectedLearningNode =
+    learningPathNodes.find((node) => node.id === selectedLearningNodeId && learningNodeStatuses[node.id] !== "completed") ??
+    learningPathNodes.find((node) => learningNodeStatuses[node.id] === "current") ??
+    learningPathNodes[0];
+  const completedLearningNodeCount = learningPathNodes.filter((node) => learningNodeStatuses[node.id] === "completed").length;
+
+  const refreshV1Data = useCallback(async (context: LearningContext = getLearningContextForNode(selectedLearningNode)) => {
+    setIsV1Loading(true);
+    setV1Error(null);
+    try {
+      const primaryTermsUrl = buildLearningUrl("/api/learning/terms", context, 6);
+      const primaryExercisesUrl = buildLearningUrl("/api/learning/exercises", context, 4);
+      const [termsResponse, exercisesResponse, progressResponse] = await Promise.all([
+        fetch(primaryTermsUrl, { method: "GET" }),
+        fetch(primaryExercisesUrl, { method: "GET" }),
+        fetch("/api/me/progress", { method: "GET" }),
+      ]);
+      if (!termsResponse.ok || !exercisesResponse.ok || !progressResponse.ok) {
+        throw new Error("V1.0 数据加载失败");
+      }
+      let termsPayload = (await termsResponse.json()) as { terms: LearningTerm[] };
+      let exercisesPayload = (await exercisesResponse.json()) as { exercises: LearningExercise[] };
+      if (context.ruleId && (termsPayload.terms.length === 0 || exercisesPayload.exercises.length === 0)) {
+        const resolvedContext = { scenario: context.scenario };
+        const [fallbackTermsResponse, fallbackExercisesResponse] = await Promise.all([
+          fetch(buildLearningUrl("/api/learning/terms", resolvedContext, 6), { method: "GET" }),
+          fetch(buildLearningUrl("/api/learning/exercises", resolvedContext, 4), { method: "GET" }),
+        ]);
+        if (!fallbackTermsResponse.ok || !fallbackExercisesResponse.ok) {
+          throw new Error("V1.0 数据加载失败");
+        }
+        termsPayload = (await fallbackTermsResponse.json()) as { terms: LearningTerm[] };
+        exercisesPayload = (await fallbackExercisesResponse.json()) as { exercises: LearningExercise[] };
+      }
+      setLearningTerms(termsPayload.terms);
+      setLearningExercises(exercisesPayload.exercises);
+      setMemberProgress((await progressResponse.json()) as MemberProgress);
+    } catch (requestError) {
+      setV1Error(requestError instanceof Error ? requestError.message : "V1.0 数据加载失败");
+    } finally {
+      setIsV1Loading(false);
+    }
+  }, [selectedLearningNode]);
+
+  const isAdmin = authPrincipal?.roles.includes("admin") ?? false;
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    async function refreshAuthPrincipal() {
+      try {
+        const response = await fetch("/api/auth/me", {
+          method: "GET",
+          headers: { "x-anonymous-id": getAnonymousId() },
+        });
+        if (!response.ok) throw new Error("auth load failed");
+        const payload = (await response.json()) as { principal: AuthPrincipal };
+        setAuthPrincipal(payload.principal);
+      } catch {
+        setAuthPrincipal({
+          kind: "anonymous",
+          user_id: null,
+          anonymous_id: getAnonymousId(),
+          email: null,
+          roles: [],
+          session_id: null,
+        });
+      }
+    }
+
+    void refreshAuthPrincipal();
+  }, []);
+
+  useEffect(() => {
+    if (!authPrincipal) return;
+    if (activeModule === "learning") {
+      queueMicrotask(() => void refreshV1Data(getLearningContextForNode(selectedLearningNode)));
+      return;
+    }
+    if (activeModule === "history") {
       void refreshHistory();
-      void refreshV1Data();
+      return;
+    }
+    if (activeModule === "growth") {
       void refreshV15Data();
+      return;
+    }
+    if (activeModule === "community") {
       void refreshV2Data();
       void refreshV3Data();
+      return;
+    }
+    if (activeModule === "privacy") {
       void refreshV35Data();
-    }, 0);
-
-    return () => window.clearTimeout(timer);
-  }, []);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModule, authPrincipal, refreshV1Data, selectedLearningNode]);
 
   const linePreview = useMemo(() => {
     return activeLineValues.map((value, index) => ({
@@ -750,7 +1344,6 @@ export function ReadingWorkbench() {
     setChatMessages([]);
     setFollowupText("");
     setFeedback(null);
-    setShareResult(null);
     setCreatorExport(null);
   }
 
@@ -767,6 +1360,16 @@ export function ReadingWorkbench() {
   function resetCast() {
     setCoinValues([]);
     setManualValues([7, 7, 7, 7, 7, 7]);
+    setResult(null);
+    setAnalysis(null);
+    setSafety(null);
+    setError(null);
+    setAnalysisError(null);
+    resetAiState();
+  }
+
+  function changeCastMethod(method: CastMethod) {
+    setCastMethod(method);
     setResult(null);
     setAnalysis(null);
     setSafety(null);
@@ -835,12 +1438,20 @@ export function ReadingWorkbench() {
       const castResponse = await fetch("/api/readings/cast", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reading_id: initPayload.reading_id,
-          cast_method: castMethod,
-          line_values: activeLineValues,
-          cast_time: castDate || getTodayCivilDate(),
-        }),
+        body: JSON.stringify(
+          castMethod === "time"
+            ? {
+                reading_id: initPayload.reading_id,
+                cast_method: castMethod,
+                cast_time: castDate || getTodayCivilDate(),
+              }
+            : {
+                reading_id: initPayload.reading_id,
+                cast_method: castMethod,
+                line_values: activeLineValues,
+                cast_time: castDate || getTodayCivilDate(),
+              },
+        ),
       });
 
       if (!castResponse.ok) throw new Error("排盘失败");
@@ -850,6 +1461,7 @@ export function ReadingWorkbench() {
       await refreshHistory();
       const analysisPayload = await requestAnalysis(initPayload.reading_id);
       if (analysisPayload) {
+        await refreshV1Data(getLearningContext(analysisPayload, scenario));
         await requestAiExplanation(initPayload.reading_id, explainMode);
       }
     } catch (submitError) {
@@ -935,20 +1547,20 @@ export function ReadingWorkbench() {
         }),
       });
       if (!response.ok) throw new Error(await readApiError(response, "追问失败"));
-      let finalSummary = "";
+      let finalAnswer = "";
       await readSseEvents(response, (event) => {
         handleAiStreamEvent(event);
         if (event.type === "final") {
-          finalSummary = event.data.summary;
+          finalAnswer = formatFollowupAnswer(event.data);
         }
       });
-      if (finalSummary) {
+      if (finalAnswer) {
         setChatMessages((current) => [
           ...current,
           {
             id: `local-assistant-${Date.now()}`,
             role: "assistant",
-            content: finalSummary,
+            content: finalAnswer,
           },
         ]);
       }
@@ -974,32 +1586,6 @@ export function ReadingWorkbench() {
     }
     if (event.type === "error") {
       setAiError(event.data.error);
-    }
-  }
-
-  async function refreshV1Data() {
-    setIsV1Loading(true);
-    setV1Error(null);
-    try {
-      const [termsResponse, exercisesResponse, progressResponse, metricsResponse] = await Promise.all([
-        fetch("/api/learning/terms?limit=6", { method: "GET" }),
-        fetch("/api/learning/exercises?limit=4", { method: "GET" }),
-        fetch("/api/me/progress", { method: "GET" }),
-        fetch("/api/admin/metrics", { method: "GET" }),
-      ]);
-      if (!termsResponse.ok || !exercisesResponse.ok || !progressResponse.ok || !metricsResponse.ok) {
-        throw new Error("V1.0 数据加载失败");
-      }
-      const termsPayload = (await termsResponse.json()) as { terms: LearningTerm[] };
-      const exercisesPayload = (await exercisesResponse.json()) as { exercises: LearningExercise[] };
-      setLearningTerms(termsPayload.terms);
-      setLearningExercises(exercisesPayload.exercises);
-      setMemberProgress((await progressResponse.json()) as MemberProgress);
-      setAdminMetrics((await metricsResponse.json()) as AdminMetrics);
-    } catch (requestError) {
-      setV1Error(requestError instanceof Error ? requestError.message : "V1.0 数据加载失败");
-    } finally {
-      setIsV1Loading(false);
     }
   }
 
@@ -1036,24 +1622,32 @@ export function ReadingWorkbench() {
     setV2Error(null);
     try {
       const anonymousId = getAnonymousId();
-      const [bootstrapResponse, postsResponse, packsResponse, queueResponse, metricsResponse] = await Promise.all([
+      const [bootstrapResponse, postsResponse, packsResponse] = await Promise.all([
         fetch(`/api/app/bootstrap?platform=web&anonymous_id=${encodeURIComponent(anonymousId)}`, { method: "GET" }),
         fetch("/api/community/posts", { method: "GET" }),
         fetch("/api/rule-packs", { method: "GET" }),
-        fetch("/api/admin/review-queue", { method: "GET" }),
-        fetch("/api/admin/metrics", { method: "GET" }),
       ]);
-      if (!bootstrapResponse.ok || !postsResponse.ok || !packsResponse.ok || !queueResponse.ok || !metricsResponse.ok) {
+      if (!bootstrapResponse.ok || !postsResponse.ok || !packsResponse.ok) {
         throw new Error("V2.0 data load failed");
       }
       const postsPayload = (await postsResponse.json()) as { posts: CommunityPost[] };
       const packsPayload = (await packsResponse.json()) as { rule_packs: RulePack[] };
-      const queuePayload = (await queueResponse.json()) as { review_queue: ReviewQueueItem[] };
       setAppBootstrap((await bootstrapResponse.json()) as AppBootstrap);
       setCommunityPosts(postsPayload.posts);
       setRulePacks(packsPayload.rule_packs);
-      setReviewQueue(queuePayload.review_queue);
-      setAdminMetrics((await metricsResponse.json()) as AdminMetrics);
+      if (isAdmin) {
+        const [queueResponse, metricsResponse] = await Promise.all([
+          fetch("/api/admin/review-queue", { method: "GET" }),
+          fetch("/api/admin/metrics", { method: "GET" }),
+        ]);
+        if (!queueResponse.ok || !metricsResponse.ok) throw new Error("V2.0 admin data load failed");
+        const queuePayload = (await queueResponse.json()) as { review_queue: ReviewQueueItem[] };
+        setReviewQueue(queuePayload.review_queue);
+        setAdminMetrics((await metricsResponse.json()) as AdminMetrics);
+      } else {
+        setReviewQueue([]);
+        setAdminMetrics(null);
+      }
     } catch (requestError) {
       setV2Error(requestError instanceof Error ? requestError.message : "V2.0 数据加载失败");
     } finally {
@@ -1267,13 +1861,12 @@ export function ReadingWorkbench() {
     setIsV3Loading(true);
     setV3Error(null);
     try {
-      const [dashboardResponse, submissionsResponse, packagesResponse, metricsResponse] = await Promise.all([
+      const [dashboardResponse, submissionsResponse, packagesResponse] = await Promise.all([
         fetch("/api/me/contributor-dashboard", { method: "GET" }),
         fetch("/api/contributor/submissions", { method: "GET" }),
         fetch("/api/ecosystem/packages", { method: "GET" }),
-        fetch("/api/admin/ecosystem/metrics", { method: "GET" }),
       ]);
-      if (!dashboardResponse.ok || !submissionsResponse.ok || !packagesResponse.ok || !metricsResponse.ok) {
+      if (!dashboardResponse.ok || !submissionsResponse.ok || !packagesResponse.ok) {
         throw new Error("V3.0 ecosystem data load failed");
       }
       const submissionsPayload = (await submissionsResponse.json()) as { submissions: ContributorSubmission[] };
@@ -1281,7 +1874,13 @@ export function ReadingWorkbench() {
       setContributorDashboard((await dashboardResponse.json()) as ContributorDashboard);
       setContributorSubmissions(submissionsPayload.submissions);
       setEcosystemPackages(packagesPayload.packages);
-      setEcosystemMetrics((await metricsResponse.json()) as EcosystemMetrics);
+      if (isAdmin) {
+        const metricsResponse = await fetch("/api/admin/ecosystem/metrics", { method: "GET" });
+        if (!metricsResponse.ok) throw new Error("V3.0 admin metrics load failed");
+        setEcosystemMetrics((await metricsResponse.json()) as EcosystemMetrics);
+      } else {
+        setEcosystemMetrics(null);
+      }
     } catch (requestError) {
       setV3Error(requestError instanceof Error ? requestError.message : "V3.0 数据加载失败");
     } finally {
@@ -1456,52 +2055,63 @@ export function ReadingWorkbench() {
     setIsV35Loading(true);
     setV35Error(null);
     try {
-      const [
-        qualityResponse,
-        riskResponse,
-        sloResponse,
-        incidentsResponse,
-        readinessResponse,
-        revenueResponse,
-        privacyResponse,
-        complianceResponse,
-        metricsResponse,
-      ] = await Promise.all([
-        fetch("/api/admin/ecosystem/quality", { method: "GET" }),
-        fetch("/api/admin/ecosystem/risk-events", { method: "GET" }),
-        fetch("/api/admin/ops/slo", { method: "GET" }),
-        fetch("/api/admin/ops/incidents", { method: "GET" }),
-        fetch("/api/admin/commercial/readiness", { method: "GET" }),
+      const [revenueResponse, privacyResponse] = await Promise.all([
         fetch("/api/contributor/revenue-preview", { method: "GET" }),
         fetch("/api/me/privacy-settings", { method: "GET" }),
-        fetch("/api/admin/compliance/reviews", { method: "GET" }),
-        fetch("/api/admin/ecosystem/metrics", { method: "GET" }),
       ]);
-      if (
-        !qualityResponse.ok ||
-        !riskResponse.ok ||
-        !sloResponse.ok ||
-        !incidentsResponse.ok ||
-        !readinessResponse.ok ||
-        !revenueResponse.ok ||
-        !privacyResponse.ok ||
-        !complianceResponse.ok ||
-        !metricsResponse.ok
-      ) {
+      if (!revenueResponse.ok || !privacyResponse.ok) {
         throw new Error("V3.5 operations data load failed");
       }
-      const riskPayload = (await riskResponse.json()) as { risk_events: EcosystemRiskEvent[] };
-      const incidentsPayload = (await incidentsResponse.json()) as { incidents: OpsIncident[] };
-      const compliancePayload = (await complianceResponse.json()) as { reviews: ComplianceReview[] };
-      setEcosystemQuality((await qualityResponse.json()) as EcosystemQualitySummary);
-      setEcosystemRiskEvents(riskPayload.risk_events);
-      setOpsSlo((await sloResponse.json()) as OpsSlo);
-      setOpsIncidents(incidentsPayload.incidents);
-      setCommercialReadiness((await readinessResponse.json()) as CommercialReadiness);
       setRevenuePreview((await revenueResponse.json()) as RevenuePreview);
       setPrivacySettings((await privacyResponse.json()) as PrivacySettings);
-      setComplianceReviews(compliancePayload.reviews);
-      setEcosystemMetrics((await metricsResponse.json()) as EcosystemMetrics);
+      if (isAdmin) {
+        const [
+          qualityResponse,
+          riskResponse,
+          sloResponse,
+          incidentsResponse,
+          readinessResponse,
+          complianceResponse,
+          metricsResponse,
+        ] = await Promise.all([
+          fetch("/api/admin/ecosystem/quality", { method: "GET" }),
+          fetch("/api/admin/ecosystem/risk-events", { method: "GET" }),
+          fetch("/api/admin/ops/slo", { method: "GET" }),
+          fetch("/api/admin/ops/incidents", { method: "GET" }),
+          fetch("/api/admin/commercial/readiness", { method: "GET" }),
+          fetch("/api/admin/compliance/reviews", { method: "GET" }),
+          fetch("/api/admin/ecosystem/metrics", { method: "GET" }),
+        ]);
+        if (
+          !qualityResponse.ok ||
+          !riskResponse.ok ||
+          !sloResponse.ok ||
+          !incidentsResponse.ok ||
+          !readinessResponse.ok ||
+          !complianceResponse.ok ||
+          !metricsResponse.ok
+        ) {
+          throw new Error("V3.5 admin operations data load failed");
+        }
+        const riskPayload = (await riskResponse.json()) as { risk_events: EcosystemRiskEvent[] };
+        const incidentsPayload = (await incidentsResponse.json()) as { incidents: OpsIncident[] };
+        const compliancePayload = (await complianceResponse.json()) as { reviews: ComplianceReview[] };
+        setEcosystemQuality((await qualityResponse.json()) as EcosystemQualitySummary);
+        setEcosystemRiskEvents(riskPayload.risk_events);
+        setOpsSlo((await sloResponse.json()) as OpsSlo);
+        setOpsIncidents(incidentsPayload.incidents);
+        setCommercialReadiness((await readinessResponse.json()) as CommercialReadiness);
+        setComplianceReviews(compliancePayload.reviews);
+        setEcosystemMetrics((await metricsResponse.json()) as EcosystemMetrics);
+      } else {
+        setEcosystemQuality(null);
+        setEcosystemRiskEvents([]);
+        setOpsSlo(null);
+        setOpsIncidents([]);
+        setCommercialReadiness(null);
+        setComplianceReviews([]);
+        setEcosystemMetrics(null);
+      }
     } catch (requestError) {
       setV35Error(requestError instanceof Error ? requestError.message : "V3.5 数据加载失败");
     } finally {
@@ -1703,61 +2313,18 @@ export function ReadingWorkbench() {
     await refreshV1Data();
   }
 
-  async function createShareCard() {
-    if (!result) return;
+  async function completeLearningNode(node: LearningPathNode) {
     setV1Error(null);
     try {
-      const response = await fetch("/api/readings/share", {
+      const response = await fetch("/api/learning/progress", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reading_id: result.reading_id,
-          visibility: "public_anonymous",
-        }),
+        body: JSON.stringify(buildLearningExerciseProgress(node)),
       });
-      if (!response.ok) throw new Error(await readApiError(response, "分享卡生成失败"));
-      setShareResult((await response.json()) as ShareResult);
-      await refreshV1Data();
+      if (!response.ok) throw new Error(await readApiError(response, "练习记录失败"));
+      await refreshV1Data(getLearningContextForNode(node));
     } catch (requestError) {
-      setV1Error(requestError instanceof Error ? requestError.message : "分享卡生成失败");
-    }
-  }
-
-  async function favoriteCurrentReading() {
-    if (!result) return;
-    setV1Error(null);
-    try {
-      const response = await fetch("/api/readings/favorite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reading_id: result.reading_id,
-          favorite: true,
-        }),
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "收藏失败"));
-      await refreshV1Data();
-    } catch (requestError) {
-      setV1Error(requestError instanceof Error ? requestError.message : "收藏失败");
-    }
-  }
-
-  async function updateCurrentTags() {
-    if (!result) return;
-    setV1Error(null);
-    try {
-      const response = await fetch("/api/readings/tags", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reading_id: result.reading_id,
-          tags: tagsText.split(/[，,\s]+/).filter(Boolean),
-        }),
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "标签保存失败"));
-      await refreshV1Data();
-    } catch (requestError) {
-      setV1Error(requestError instanceof Error ? requestError.message : "标签保存失败");
+      setV1Error(requestError instanceof Error ? requestError.message : "练习记录失败");
     }
   }
 
@@ -1820,27 +2387,34 @@ export function ReadingWorkbench() {
     }
   }
 
-  async function createCreatorMaterial(exportType: CreatorExportResult["export_type"]) {
+  async function createCreatorMaterial(request: CreatorMaterialRequest) {
     setV15Error(null);
     setCreatorExport(null);
+    setIsCreatorGenerating(true);
     try {
-      const fallbackCase = cases[0];
+      const requestPayload = buildCreatorExportPayload({
+        sourceType: request.sourceType,
+        readingId: result?.reading_id,
+        caseId: request.caseId,
+        exportType: request.exportType,
+      });
       const response = await fetch("/api/creator/exports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reading_id: result?.reading_id,
-          case_id: result ? fallbackCase?.id : fallbackCase?.id,
-          export_type: exportType,
-        }),
+        body: JSON.stringify(requestPayload),
       });
-      if (!response.ok) throw new Error(await readApiError(response, "创作者素材生成失败"));
+      if (!response.ok) {
+        const apiError = await readApiError(response, "创作者素材生成失败");
+        throw new Error(response.status === 422 || apiError === "creator_export_blocked" ? "该内容不适合生成传播素材。" : apiError);
+      }
       const payload = (await response.json()) as { export: CreatorExportResult };
       setCreatorExport(payload.export);
       await refreshV15Data();
       await refreshV1Data();
     } catch (requestError) {
       setV15Error(requestError instanceof Error ? requestError.message : "创作者素材生成失败");
+    } finally {
+      setIsCreatorGenerating(false);
     }
   }
 
@@ -1862,11 +2436,17 @@ export function ReadingWorkbench() {
         return next;
       });
       setSelectedHistory((current) => (current?.reading_id === readingId ? null : current));
+      setPendingDeleteHistory((current) => (current?.reading_id === readingId ? null : current));
     }
   }
 
+  function selectModule(module: WorkbenchModule) {
+    setActiveModule(module);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fffaf0_0,#f7f4ec_34%,#e8f0e7_100%)] text-[#171814]">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff6df_0,#f2eadb_36%,#dfeedd_100%)] text-[#171814]">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-4 border-b border-[#2f3b2f]/15 pb-4 md:flex-row md:items-end md:justify-between">
           <div className="flex items-center gap-4">
@@ -1884,8 +2464,33 @@ export function ReadingWorkbench() {
           </div>
         </header>
 
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
-          <section className="rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-4 shadow-sm">
+        <nav className="rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-3 shadow-sm" aria-label="主要功能入口">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {moduleLinks.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => selectModule(id)}
+                aria-pressed={activeModule === id}
+                className={`flex h-10 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium transition ${
+                  activeModule === id
+                    ? "border-[#2f6b4f]/35 bg-[#edf3ea] text-[#245f46] shadow-sm"
+                    : "border-[#2f3b2f]/12 bg-[#fffdf7] text-[#314239] hover:bg-[#edf3ea] hover:text-[#245f46]"
+                }`}
+              >
+                <Icon className="h-4 w-4" aria-hidden="true" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </nav>
+
+        {activeModule === "cast" ? (
+        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
+          <section
+            id="cast"
+            className="scroll-mt-4 rounded-lg border border-[#2f3b2f]/15 bg-white/78 p-4 shadow-sm lg:sticky lg:top-5"
+          >
             <div className="mb-4 flex items-center gap-2">
               <PenLine className="h-5 w-5 text-[#7a2f24]" aria-hidden="true" />
               <h2 className="text-lg font-semibold">问题与起卦</h2>
@@ -1918,6 +2523,22 @@ export function ReadingWorkbench() {
               ))}
             </select>
 
+            <label className="mt-4 block text-sm font-medium text-[#314239]" htmlFor="explain-mode">
+              解读方式
+            </label>
+            <select
+              id="explain-mode"
+              value={explainMode}
+              onChange={(event) => setExplainMode(event.target.value as ExplainMode)}
+              className="mt-2 h-11 w-full rounded-md border border-[#2f3b2f]/20 bg-[#fffdf7] px-3 outline-none transition focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/20"
+            >
+              {explainModes.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+
             <label className="mt-4 block text-sm font-medium text-[#314239]" htmlFor="cast-date">
               起卦日期
             </label>
@@ -1929,10 +2550,10 @@ export function ReadingWorkbench() {
               className="mt-2 h-11 w-full rounded-md border border-[#2f3b2f]/20 bg-[#fffdf7] px-3 outline-none transition focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/20"
             />
 
-            <div className="mt-5 grid grid-cols-2 gap-2 rounded-lg bg-[#edf3ea] p-1">
+            <div className="mt-5 grid grid-cols-3 gap-2 rounded-lg bg-[#edf3ea] p-1">
               <button
                 type="button"
-                onClick={() => setCastMethod("coin")}
+                onClick={() => changeCastMethod("coin")}
                 className={`flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition ${
                   castMethod === "coin" ? "bg-white text-[#7a2f24] shadow-sm" : "text-[#314239] hover:bg-white/65"
                 }`}
@@ -1942,7 +2563,7 @@ export function ReadingWorkbench() {
               </button>
               <button
                 type="button"
-                onClick={() => setCastMethod("manual")}
+                onClick={() => changeCastMethod("manual")}
                 className={`flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition ${
                   castMethod === "manual" ? "bg-white text-[#7a2f24] shadow-sm" : "text-[#314239] hover:bg-white/65"
                 }`}
@@ -1950,9 +2571,26 @@ export function ReadingWorkbench() {
                 <PenLine className="h-4 w-4" aria-hidden="true" />
                 手动输入
               </button>
+              <button
+                type="button"
+                onClick={() => changeCastMethod("time")}
+                className={`flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-medium transition ${
+                  castMethod === "time" ? "bg-white text-[#7a2f24] shadow-sm" : "text-[#314239] hover:bg-white/65"
+                }`}
+              >
+                <Gauge className="h-4 w-4" aria-hidden="true" />
+                时间起卦
+              </button>
             </div>
 
-            {castMethod === "coin" ? (
+            {castMethod === "time" ? (
+              <div className="mt-4 rounded-lg border border-[#2f6b4f]/18 bg-[#edf3ea] p-4 text-sm leading-6 text-[#314239]">
+                <p className="font-medium text-[#245f46]">时间起卦 · 轻量体验</p>
+                <p className="mt-1">
+                  系统会按所选日期生成 6 爻，适合快速体验和学习复盘；它不等同于传统铜钱法，结果仍会经过排盘、证据树、AI 解读和安全边界。
+                </p>
+              </div>
+            ) : castMethod === "coin" ? (
               <div className="mt-4 rounded-lg border border-[#9a6a2f]/20 bg-[#fff9e8] p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -2070,44 +2708,53 @@ export function ReadingWorkbench() {
             ) : null}
           </section>
         </div>
+        ) : null}
 
-        <V1PublicTestPanel
-          result={result}
-          terms={learningTerms}
-          exercises={learningExercises}
-          selectedCard={selectedLearningCard}
-          memberProgress={memberProgress}
-          adminMetrics={adminMetrics}
-          shareResult={shareResult}
-          tagsText={tagsText}
-          isLoading={isV1Loading}
-          error={v1Error}
-          onTagsTextChange={setTagsText}
-          onOpenLearningCard={(cardId) => void openLearningCard(cardId)}
-          onSaveExercise={(exerciseId) => void saveLearningProgress(exerciseId, "exercise")}
-          onCreateShare={() => void createShareCard()}
-          onFavorite={() => void favoriteCurrentReading()}
-          onUpdateTags={() => void updateCurrentTags()}
-          onRefresh={() => void refreshV1Data()}
-        />
+        {activeModule === "learning" ? (
+        <div className="scroll-mt-4">
+          <LearningPathPanel
+            result={result}
+            nodes={learningPathNodes}
+            selectedNode={selectedLearningNode}
+            nodeStatuses={learningNodeStatuses}
+            completedCount={completedLearningNodeCount}
+            terms={learningTerms}
+            exercises={learningExercises}
+            selectedCard={selectedLearningCard}
+            isLoading={isV1Loading}
+            error={v1Error}
+            onSelectNode={(node) => setSelectedLearningNodeId(node.id)}
+            onOpenLearningCard={(cardId) => void openLearningCard(cardId)}
+            onCompleteNode={(node) => void completeLearningNode(node)}
+            onRefresh={() => void refreshV1Data(getLearningContextForNode(selectedLearningNode))}
+          />
+        </div>
+        ) : null}
 
-        <V15GrowthPanel
+        {activeModule === "growth" ? (
+        <div className="scroll-mt-4">
+          <V15GrowthPanel
           result={result}
           cases={cases}
           courses={courses}
           courseProgress={courseProgress}
           creatorExport={creatorExport}
+          isCreatorGenerating={isCreatorGenerating}
           experimentAssignment={experimentAssignment}
           adminMetrics={adminMetrics}
           isLoading={isV15Loading}
           error={v15Error}
           onOpenCase={(caseId) => void openCase(caseId)}
           onStartCourse={(course) => void startCourse(course)}
-          onCreateCreatorMaterial={(exportType) => void createCreatorMaterial(exportType)}
+          onCreateCreatorMaterial={(request) => void createCreatorMaterial(request)}
           onRefresh={() => void refreshV15Data()}
-        />
+          />
+        </div>
+        ) : null}
 
-        <V2ExpansionPanel
+        {activeModule === "community" ? (
+        <div className="grid scroll-mt-4 gap-5">
+          <V2ExpansionPanel
           result={result}
           appBootstrap={appBootstrap}
           device={device}
@@ -2126,7 +2773,7 @@ export function ReadingWorkbench() {
           onCreatePost={() => void createV2CommunityPost()}
           onPublishRulePack={() => void publishV2RulePack()}
           onRefresh={() => void refreshV2Data()}
-        />
+          />
 
         <V3EcosystemPanel
           dashboard={contributorDashboard}
@@ -2145,8 +2792,12 @@ export function ReadingWorkbench() {
           onSuspendPackage={() => void suspendV3Package()}
           onRefresh={() => void refreshV3Data()}
         />
+        </div>
+        ) : null}
 
-        <V35OperationsPanel
+        {activeModule === "privacy" ? (
+        <div className="scroll-mt-4">
+          <V35OperationsPanel
           quality={ecosystemQuality}
           riskEvents={ecosystemRiskEvents}
           opsSlo={opsSlo}
@@ -2169,9 +2820,12 @@ export function ReadingWorkbench() {
           onRequestDataExport={() => void requestV35DataExport()}
           onResolveComplianceReview={() => void resolveV35ComplianceReview()}
           onRefresh={() => void refreshV35Data()}
-        />
+          />
+        </div>
+        ) : null}
 
-        <section className="rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-4 shadow-sm">
+        {activeModule === "history" ? (
+        <section className="scroll-mt-4 rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-4 shadow-sm">
           <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">
               <History className="h-5 w-5 text-[#7a2f24]" aria-hidden="true" />
@@ -2210,7 +2864,7 @@ export function ReadingWorkbench() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void deleteHistoryItem(item.reading_id)}
+                      onClick={() => setPendingDeleteHistory(item)}
                       className="grid h-8 w-9 place-items-center rounded-md border border-[#8f3b2f]/20 bg-white text-[#8f3b2f] transition hover:bg-[#fff0ec]"
                       aria-label="删除历史记录"
                     >
@@ -2221,6 +2875,38 @@ export function ReadingWorkbench() {
               ))}
             </div>
           )}
+          {pendingDeleteHistory ? (
+            <div
+              className="mt-4 rounded-md border border-[#8f3b2f]/22 bg-[#fff0ec] p-3 text-sm leading-6 text-[#752f26]"
+              role="alertdialog"
+              aria-labelledby="delete-history-title"
+              aria-describedby="delete-history-description"
+            >
+              <p id="delete-history-title" className="font-semibold">
+                确认删除这条历史记录？
+              </p>
+              <p id="delete-history-description" className="mt-1 text-[#6a3028]">
+                {pendingDeleteHistory.question_preview}
+              </p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => setPendingDeleteHistory(null)}
+                  className="flex h-9 items-center justify-center rounded-md border border-[#2f3b2f]/20 bg-white px-3 font-medium text-[#314239] transition hover:bg-[#f3f0e8]"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteHistoryItem(pendingDeleteHistory.reading_id)}
+                  className="flex h-9 items-center justify-center gap-2 rounded-md bg-[#8f3b2f] px-3 font-semibold text-white transition hover:bg-[#752f26]"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  确认删除
+                </button>
+              </div>
+            </div>
+          ) : null}
           {selectedHistory ? (
             <div className="mt-4 rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-3 text-sm leading-6 text-[#314239]">
               <p className="font-semibold">当前查看</p>
@@ -2233,6 +2919,7 @@ export function ReadingWorkbench() {
             </div>
           ) : null}
         </section>
+        ) : null}
       </div>
     </main>
   );
@@ -2728,7 +3415,8 @@ function V35OperationsPanel({
           {latestPrivacyExport ? (
             <p className="rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-3 text-xs leading-5 text-[#314239]">
               {latestPrivacyExport.status} / {latestPrivacyExport.export_format} / raw text{" "}
-              {latestPrivacyExport.includes_raw_question_text ? "on" : "off"}
+              {latestPrivacyExport.includes_raw_question_text ? "on" : "off"} / private followups{" "}
+              {latestPrivacyExport.includes_private_followups ? "on" : "off"}
             </p>
           ) : null}
           {openComplianceReview ? (
@@ -2982,6 +3670,7 @@ function V15GrowthPanel({
   courses,
   courseProgress,
   creatorExport,
+  isCreatorGenerating,
   experimentAssignment,
   adminMetrics,
   isLoading,
@@ -2996,16 +3685,59 @@ function V15GrowthPanel({
   courses: CourseSummary[];
   courseProgress: CourseProgressSummary | null;
   creatorExport: CreatorExportResult | null;
+  isCreatorGenerating: boolean;
   experimentAssignment: ExperimentAssignment | null;
   adminMetrics: AdminMetrics | null;
   isLoading: boolean;
   error: string | null;
   onOpenCase: (caseId: string) => void;
   onStartCourse: (course: CourseSummary) => void;
-  onCreateCreatorMaterial: (exportType: CreatorExportResult["export_type"]) => void;
+  onCreateCreatorMaterial: (request: CreatorMaterialRequest) => void;
   onRefresh: () => void;
 }) {
   const completedLessonIds = new Set(courseProgress?.progress.filter((item) => item.completed).map((item) => item.lesson_id) ?? []);
+  const [creatorSourceType, setCreatorSourceType] = useState<CreatorSourceType | null>(null);
+  const [selectedCreatorCaseId, setSelectedCreatorCaseId] = useState(cases[0]?.id ?? "");
+  const [selectedCreatorExportType, setSelectedCreatorExportType] = useState<CreatorExportType>("article");
+  const [creatorCopyStatus, setCreatorCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const requestedCreatorSource: CreatorSourceType = creatorSourceType ?? getDefaultCreatorSource(Boolean(result), cases.length > 0);
+  const effectiveCreatorSource: CreatorSourceType = requestedCreatorSource === "reading" && !result ? "case" : requestedCreatorSource;
+  const selectedCreatorCase = cases.find((item) => item.id === selectedCreatorCaseId) ?? cases[0];
+  const canGenerateCreatorMaterial =
+    !isCreatorGenerating && (effectiveCreatorSource === "reading" ? Boolean(result) : Boolean(selectedCreatorCase));
+
+  function createMaterial() {
+    if (!canGenerateCreatorMaterial) return;
+    setCreatorCopyStatus("idle");
+    onCreateCreatorMaterial({
+      sourceType: effectiveCreatorSource,
+      exportType: selectedCreatorExportType,
+      caseId: effectiveCreatorSource === "case" ? selectedCreatorCase?.id : undefined,
+    });
+  }
+
+  async function copyCreatorExport() {
+    if (!creatorExport) return;
+    try {
+      await navigator.clipboard.writeText(formatCreatorExportText(creatorExport));
+      setCreatorCopyStatus("copied");
+    } catch {
+      setCreatorCopyStatus("failed");
+    }
+  }
+
+  function downloadCreatorExport() {
+    if (!creatorExport) return;
+    const blob = new Blob([formatCreatorExportText(creatorExport)], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${creatorExport.id}.md`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <section className="grid gap-4 rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-4 shadow-sm">
@@ -3105,18 +3837,129 @@ function V15GrowthPanel({
             <PenLine className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
             <p className="font-medium">创作者工具</p>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <CreatorButton label="图文提纲" exportType="article" disabled={!result && cases.length === 0} onCreate={onCreateCreatorMaterial} />
-            <CreatorButton label="短视频脚本" exportType="short_video_script" disabled={!result && cases.length === 0} onCreate={onCreateCreatorMaterial} />
-            <CreatorButton label="长图结构" exportType="long_image" disabled={!result && cases.length === 0} onCreate={onCreateCreatorMaterial} />
-            <CreatorButton label="排盘图" exportType="chart_snapshot" disabled={!result && cases.length === 0} onCreate={onCreateCreatorMaterial} />
+
+          <div className="grid gap-2 rounded-md border border-[#2f3b2f]/12 bg-white p-3">
+            <p className="text-xs font-medium text-[#6a675c]">素材来源</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setCreatorSourceType("reading")}
+                disabled={!result}
+                aria-pressed={effectiveCreatorSource === "reading"}
+                className={`h-9 rounded-md border px-2 text-sm font-medium transition ${
+                  effectiveCreatorSource === "reading"
+                    ? "border-[#245f46] bg-[#245f46] text-white"
+                    : "border-[#2f3b2f]/16 bg-white text-[#314239] hover:bg-[#edf3ea]"
+                } disabled:cursor-not-allowed disabled:opacity-55`}
+              >
+                当前卦盘
+              </button>
+              <button
+                type="button"
+                onClick={() => setCreatorSourceType("case")}
+                aria-pressed={effectiveCreatorSource === "case"}
+                className={`h-9 rounded-md border px-2 text-sm font-medium transition ${
+                  effectiveCreatorSource === "case"
+                    ? "border-[#245f46] bg-[#245f46] text-white"
+                    : "border-[#2f3b2f]/16 bg-white text-[#314239] hover:bg-[#edf3ea]"
+                }`}
+              >
+                案例库
+              </button>
+            </div>
+            {!result ? <p className="text-xs text-[#8f3b2f]">当前卦盘需先起卦后可用。</p> : null}
+            {effectiveCreatorSource === "case" ? (
+              <label className="grid gap-1 text-xs text-[#6a675c]">
+                选择案例
+                <select
+                  value={selectedCreatorCase?.id ?? ""}
+                  onChange={(event) => setSelectedCreatorCaseId(event.target.value)}
+                  disabled={cases.length === 0}
+                  className="h-10 rounded-md border border-[#2f3b2f]/20 bg-white px-2 text-sm text-[#171814] outline-none focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/20 disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {cases.length === 0 ? <option value="">暂无案例</option> : null}
+                  {cases.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </div>
+
+          <div className="grid gap-2">
+            <p className="text-xs font-medium text-[#6a675c]">素材类型</p>
+            <div className="grid grid-cols-2 gap-2">
+              {creatorMaterialTypes.map((type) => (
+                <button
+                  key={type.value}
+                  type="button"
+                  onClick={() => setSelectedCreatorExportType(type.value)}
+                  aria-pressed={selectedCreatorExportType === type.value}
+                  className={`rounded-md border p-2 text-left transition ${
+                    selectedCreatorExportType === type.value
+                      ? "border-[#7a2f24]/45 bg-[#fff0ec]"
+                      : "border-[#2f3b2f]/12 bg-white hover:bg-[#f3f0e8]"
+                  }`}
+                >
+                  <span className="block text-sm font-semibold text-[#171814]">{type.label}</span>
+                  <span className="mt-1 line-clamp-2 block text-xs leading-5 text-[#6a675c]">{type.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={createMaterial}
+            disabled={!canGenerateCreatorMaterial}
+            className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#245f46] px-3 text-sm font-semibold text-white transition hover:bg-[#1c4c38] disabled:cursor-not-allowed disabled:bg-[#9cad9f]"
+          >
+            <FileText className="h-4 w-4" aria-hidden="true" />
+            {isCreatorGenerating ? "生成中" : "生成素材"}
+          </button>
+          {!canGenerateCreatorMaterial && !isCreatorGenerating ? (
+            <p className="rounded-md border border-[#2f3b2f]/12 bg-white p-3 text-sm leading-6 text-[#6a675c]">
+              暂无可用来源。请先起卦，或刷新案例库后选择一个脱敏案例。
+            </p>
+          ) : null}
+
           {creatorExport ? (
             <article className="rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-3 text-sm leading-6">
-              <p className="font-semibold">{creatorExport.title}</p>
-              <ul className="mt-2 grid gap-1">
-                {creatorExport.content_sections.slice(0, 4).map((section) => (
-                  <li key={section}>{section}</li>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="font-semibold">{creatorExport.title}</p>
+                  <p className="mt-1 text-xs text-[#6a675c]">
+                    {toCreatorExportTypeLabel(creatorExport.export_type)} /{" "}
+                    {effectiveCreatorSource === "reading" ? "当前卦盘" : `案例库：${selectedCreatorCase?.title ?? "脱敏案例"}`}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copyCreatorExport()}
+                    className="flex h-8 items-center gap-1 rounded-md border border-[#2f3b2f]/16 bg-white px-2 text-xs font-medium text-[#314239] transition hover:bg-[#f3f0e8]"
+                  >
+                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                    {creatorCopyStatus === "copied" ? "已复制" : creatorCopyStatus === "failed" ? "复制失败" : "复制全文"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadCreatorExport}
+                    className="flex h-8 items-center gap-1 rounded-md border border-[#2f3b2f]/16 bg-white px-2 text-xs font-medium text-[#314239] transition hover:bg-[#f3f0e8]"
+                  >
+                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                    下载 Markdown
+                  </button>
+                </div>
+              </div>
+              <ul className="mt-3 grid gap-2">
+                {creatorExport.content_sections.map((section, index) => (
+                  <li key={`${creatorExport.id}-${index}`} className="rounded-md border border-[#2f3b2f]/12 bg-white/82 p-2">
+                    <span className="text-xs font-semibold text-[#245f46]">{index + 1}</span>
+                    <p className="mt-1 whitespace-pre-wrap">{section}</p>
+                  </li>
                 ))}
               </ul>
               <p className="mt-2 text-xs text-[#6a675c]">{creatorExport.safety_notice}</p>
@@ -3140,199 +3983,245 @@ function V15GrowthPanel({
   );
 }
 
-function CreatorButton({
-  label,
-  exportType,
-  disabled,
-  onCreate,
-}: {
-  label: string;
-  exportType: CreatorExportResult["export_type"];
-  disabled: boolean;
-  onCreate: (exportType: CreatorExportResult["export_type"]) => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onCreate(exportType)}
-      disabled={disabled}
-      className="flex h-10 items-center justify-center rounded-md border border-[#2f3b2f]/20 bg-white px-3 text-sm font-medium text-[#314239] transition hover:bg-[#edf3ea] disabled:cursor-not-allowed disabled:opacity-55"
-    >
-      {label}
-    </button>
-  );
-}
-
-function V1PublicTestPanel({
+function LearningPathPanel({
   result,
+  nodes,
+  selectedNode,
+  nodeStatuses,
+  completedCount,
   terms,
   exercises,
   selectedCard,
-  memberProgress,
-  adminMetrics,
-  shareResult,
-  tagsText,
   isLoading,
   error,
-  onTagsTextChange,
+  onSelectNode,
   onOpenLearningCard,
-  onSaveExercise,
-  onCreateShare,
-  onFavorite,
-  onUpdateTags,
+  onCompleteNode,
   onRefresh,
 }: {
   result: CastResult | null;
+  nodes: LearningPathNode[];
+  selectedNode: LearningPathNode;
+  nodeStatuses: Record<string, LearningNodeStatus>;
+  completedCount: number;
   terms: LearningTerm[];
   exercises: LearningExercise[];
   selectedCard: LearningCardDetail | null;
-  memberProgress: MemberProgress | null;
-  adminMetrics: AdminMetrics | null;
-  shareResult: ShareResult | null;
-  tagsText: string;
   isLoading: boolean;
   error: string | null;
-  onTagsTextChange: (value: string) => void;
+  onSelectNode: (node: LearningPathNode) => void;
   onOpenLearningCard: (cardId: string) => void;
-  onSaveExercise: (exerciseId: string) => void;
-  onCreateShare: () => void;
-  onFavorite: () => void;
-  onUpdateTags: () => void;
+  onCompleteNode: (node: LearningPathNode) => void;
   onRefresh: () => void;
 }) {
-  const currentTags = result && memberProgress ? memberProgress.tags[result.reading_id] ?? [] : [];
-  const isFavorite = Boolean(result && memberProgress?.favorites.includes(result.reading_id));
+  const activeTerm = terms.find((term) => term.rule_id === selectedNode.ruleId) ?? terms[0];
+  const activeExercise =
+    exercises.find((exercise) => exercise.answer === selectedNode.ruleId && exercise.difficulty === selectedNode.difficulty) ??
+    exercises.find((exercise) => exercise.answer === selectedNode.ruleId);
+  const selectedStatus = nodeStatuses[selectedNode.id] ?? "current";
+  const progressLabel = `${completedCount}/${nodes.length}`;
+  const [expandedLearningSections, setExpandedLearningSections] = useState<Record<LearningPathSectionId, boolean>>(() =>
+    Object.fromEntries(learningPathSections.map((section) => [section.id, false])) as Record<LearningPathSectionId, boolean>,
+  );
+  const selectedSection = learningPathSections.find((section) => section.id === selectedNode.sectionId) ?? learningPathSections[0];
+
+  function selectLearningNode(node: LearningPathNode) {
+    setExpandedLearningSections((current) =>
+      current[node.sectionId] ? current : { ...current, [node.sectionId]: true },
+    );
+    onSelectNode(node);
+  }
 
   return (
     <section className="grid gap-4 rounded-lg border border-[#2f3b2f]/15 bg-white/82 p-4 shadow-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <GraduationCap className="h-5 w-5 text-[#245f46]" aria-hidden="true" />
-          <h2 className="text-lg font-semibold">V1.0 学习与公开测试</h2>
+      <div className="grid gap-4 rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div className="flex items-start gap-3">
+          <GraduationCap className="mt-1 h-5 w-5 shrink-0 text-[#245f46]" aria-hidden="true" />
+          <div>
+            <p className="text-sm font-medium text-[#245f46]">{result ? "基于当前卦推荐" : "入门推荐路径"}</p>
+            <h2 className="mt-1 text-xl font-semibold text-[#171814]">六爻系统学习路径</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[#314239]">
+              从起卦基础到六亲、旺衰、证据树和实战复盘，按章节逐步推进。每节都有核心知识、例子、反例和练习。
+            </p>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="flex h-9 items-center justify-center gap-2 rounded-md border border-[#2f3b2f]/20 bg-white px-3 text-sm font-medium text-[#314239] transition hover:bg-[#f3f0e8]"
-        >
-          <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          {isLoading ? "刷新中" : "刷新"}
-        </button>
+        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[26rem]">
+          <MiniMetric label="路径进度" value={progressLabel} />
+          <MiniMetric label="章节" value={`${learningPathSections.length} 章`} />
+          <button
+            type="button"
+            onClick={() => selectLearningNode(nodes.find((node) => nodeStatuses[node.id] === "current") ?? selectedNode)}
+            className="flex h-full min-h-14 items-center justify-center rounded-md bg-[#245f46] px-3 text-sm font-semibold text-white transition hover:bg-[#1c4c38]"
+          >
+            继续学习
+          </button>
+        </div>
       </div>
+
       {error ? <p className="rounded-md bg-[#fff0ec] p-3 text-sm text-[#8f3b2f]">{error}</p> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_1fr_0.9fr]">
-        <div className="grid gap-3 rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
-          <div className="flex items-center gap-2">
-            <BookOpen className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
-            <p className="font-medium">术语与知识卡</p>
-          </div>
-          <div className="grid gap-2">
-            {terms.slice(0, 4).map((term) => (
-              <button
-                key={term.id}
-                type="button"
-                onClick={() => onOpenLearningCard(term.id.split("-").slice(2).join("-"))}
-                className="rounded-md border border-[#2f3b2f]/12 bg-white p-3 text-left text-sm transition hover:bg-[#edf3ea]"
-              >
-                <span className="font-semibold text-[#171814]">{term.term}</span>
-                <span className="ml-2 rounded-md bg-[#245f46] px-2 py-0.5 text-xs text-white">{term.rule_id}</span>
-                <span className="mt-1 line-clamp-2 block text-[#6a675c]">{term.definition}</span>
-              </button>
-            ))}
-          </div>
-          {selectedCard ? (
-            <article className="rounded-md border border-[#9a6a2f]/18 bg-[#fff9e8] p-3 text-sm leading-6">
-              <p className="font-semibold">{selectedCard.title}</p>
-              <p className="mt-1">{selectedCard.content}</p>
-              <p className="mt-1 text-[#6a675c]">{selectedCard.counter_example}</p>
-            </article>
-          ) : null}
-        </div>
-
-        <div className="grid gap-3 rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
-          <div className="flex items-center gap-2">
-            <Share2 className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
-            <p className="font-medium">分享、收藏与标签</p>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <button
-              type="button"
-              onClick={onCreateShare}
-              disabled={!result}
-              className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#245f46] px-3 text-sm font-semibold text-white transition hover:bg-[#1c4c38] disabled:cursor-not-allowed disabled:bg-[#9cad9f]"
-            >
-              <Share2 className="h-4 w-4" aria-hidden="true" />
-              生成分享卡
-            </button>
-            <button
-              type="button"
-              onClick={onFavorite}
-              disabled={!result}
-              className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#2f3b2f]/20 bg-white px-3 text-sm font-medium text-[#314239] transition hover:bg-[#f3f0e8] disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              <Star className="h-4 w-4" aria-hidden="true" />
-              {isFavorite ? "已收藏" : "收藏"}
-            </button>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              value={tagsText}
-              onChange={(event) => onTagsTextChange(event.target.value)}
-              className="h-10 min-w-0 flex-1 rounded-md border border-[#2f3b2f]/20 bg-white px-3 outline-none transition focus:border-[#2f6b4f] focus:ring-2 focus:ring-[#2f6b4f]/20"
-              placeholder="标签，用逗号分隔"
-            />
-            <button
-              type="button"
-              onClick={onUpdateTags}
-              disabled={!result}
-              className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#2f3b2f]/20 bg-white px-3 text-sm font-medium text-[#314239] transition hover:bg-[#f3f0e8] disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              <Tags className="h-4 w-4" aria-hidden="true" />
-              保存标签
-            </button>
-          </div>
-          {currentTags.length > 0 ? <p className="text-sm text-[#6a675c]">当前标签：{currentTags.join("、")}</p> : null}
-          {shareResult ? (
-            <article className="rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-3 text-sm leading-6">
-              <p className="font-semibold">{shareResult.card_payload.base_chart} 分享卡已生成</p>
-              <p>{shareResult.card_payload.question_preview}</p>
-              <a className="font-medium text-[#245f46] underline" href={shareResult.share_url} target="_blank" rel="noreferrer">
-                打开匿名分享页
-              </a>
-            </article>
-          ) : null}
-        </div>
-
-        <div className="grid gap-3 rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
-          <div className="flex items-center gap-2">
-            <Gauge className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
-            <p className="font-medium">练习与运营快照</p>
-          </div>
-          <div className="grid gap-2">
-            {exercises.slice(0, 3).map((exercise) => (
-              <button
-                key={exercise.id}
-                type="button"
-                onClick={() => onSaveExercise(exercise.id)}
-                className="rounded-md border border-[#2f3b2f]/12 bg-white p-3 text-left text-sm transition hover:bg-[#edf3ea]"
-              >
-                <span className="font-semibold">{exercise.title}</span>
-                <span className="ml-2 text-xs text-[#6a675c]">{exercise.difficulty}</span>
-                <span className="mt-1 line-clamp-2 block text-[#6a675c]">{exercise.prompt}</span>
-              </button>
-            ))}
-          </div>
-          {adminMetrics ? (
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <MiniMetric label="起卦" value={String(adminMetrics.cast_completion_count)} />
-              <MiniMetric label="分享" value={String(adminMetrics.share_count)} />
-              <MiniMetric label="反馈" value={String(adminMetrics.feedback_count)} />
-              <MiniMetric label="拒答" value={String(adminMetrics.safety_block_count)} />
-              <MiniMetric label="排盘 P95" value={`${adminMetrics.p95_latency_ms.cast}ms`} />
-              <MiniMetric label="分享 P95" value={`${adminMetrics.p95_latency_ms.share_page}ms`} />
+      <div className="grid gap-4 lg:grid-cols-[0.95fr_1.25fr]">
+        <div className="rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
+              <p className="font-medium">课程目录</p>
             </div>
-          ) : null}
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="flex h-8 items-center justify-center gap-1 rounded-md border border-[#2f3b2f]/20 bg-white px-2 text-xs font-medium text-[#314239] transition hover:bg-[#f3f0e8]"
+            >
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              {isLoading ? "刷新中" : "刷新"}
+            </button>
+          </div>
+          <div className="grid gap-2">
+            {learningPathSections.map((section) => {
+              const sectionNodes = nodes.filter((node) => node.sectionId === section.id);
+              const sectionCompleted = sectionNodes.filter((node) => nodeStatuses[node.id] === "completed").length;
+              const isExpanded = expandedLearningSections[section.id] || section.id === selectedNode.sectionId;
+              return (
+                <div key={section.id} className="overflow-hidden rounded-md border border-[#2f3b2f]/12 bg-white">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedLearningSections((current) => ({ ...current, [section.id]: !current[section.id] }))
+                    }
+                    aria-expanded={isExpanded}
+                    className="flex w-full items-center justify-between gap-3 p-3 text-left transition hover:bg-[#f3f0e8]"
+                  >
+                    <span>
+                      <span className="block font-semibold text-[#171814]">{section.title}</span>
+                      <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-[#6a675c]">{section.summary}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2 text-xs text-[#6a675c]">
+                      {sectionCompleted}/{sectionNodes.length}
+                      <span className="text-lg leading-none">{isExpanded ? "−" : "+"}</span>
+                    </span>
+                  </button>
+                  {isExpanded ? (
+                    <div className="grid gap-2 border-t border-[#2f3b2f]/10 p-2">
+                      {sectionNodes.map((node) => {
+                        const nodeIndex = nodes.findIndex((item) => item.id === node.id);
+                        const status = nodeStatuses[node.id] ?? "locked";
+                        const isSelected = node.id === selectedNode.id;
+                        return (
+                          <button
+                            key={node.id}
+                            type="button"
+                            onClick={() => selectLearningNode(node)}
+                            aria-pressed={isSelected}
+                            className={`grid grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 rounded-md border p-2 text-left transition ${
+                              isSelected
+                                ? "border-[#245f46]/45 bg-[#edf3ea] shadow-sm"
+                                : "border-[#2f3b2f]/10 bg-[#fffdf7] hover:bg-[#f3f0e8]"
+                            }`}
+                          >
+                            <span
+                              className={`grid h-7 w-7 place-items-center rounded-full text-xs font-semibold ${
+                                status === "completed"
+                                  ? "bg-[#245f46] text-white"
+                                  : status === "current"
+                                    ? "bg-[#8f3b2f] text-white"
+                                    : "bg-[#f3f0e8] text-[#6a675c]"
+                              }`}
+                            >
+                              {status === "completed" ? "✓" : nodeIndex + 1}
+                            </span>
+                            <span>
+                              <span className="block text-sm font-semibold text-[#171814]">{node.title}</span>
+                              <span className="mt-0.5 line-clamp-2 block text-xs leading-5 text-[#6a675c]">{node.summary}</span>
+                            </span>
+                            <span className="rounded-md bg-[#fff9e8] px-2 py-1 text-xs font-medium text-[#7a2f24]">
+                              {toLearningNodeStatusLabel(status)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid gap-4">
+          <article className="rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-[#245f46]">当前节点</p>
+                <h3 className="mt-1 text-lg font-semibold text-[#171814]">{selectedNode.title}</h3>
+                <p className="mt-1 text-xs text-[#6a675c]">{selectedSection.title}</p>
+              </div>
+              <span className="w-fit rounded-md bg-[#edf3ea] px-2 py-1 text-xs font-medium text-[#245f46]">
+                {selectedNode.term} · {selectedNode.ruleId}
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-[#314239]">{selectedNode.summary}</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="rounded-md border border-[#2f3b2f]/12 bg-white/78 p-3 text-sm leading-6">
+                <p className="font-semibold text-[#171814]">{selectedCard?.title ?? activeTerm?.term ?? "核心知识卡"}</p>
+                <p className="mt-1 text-[#314239]">{selectedCard?.content ?? activeTerm?.definition ?? selectedNode.core}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cardId = activeTerm?.id.split("-").slice(2).join("-");
+                    if (cardId) onOpenLearningCard(cardId);
+                  }}
+                  disabled={!activeTerm}
+                  className="mt-3 h-9 rounded-md border border-[#2f3b2f]/20 bg-white px-3 text-sm font-medium text-[#314239] transition hover:bg-[#f3f0e8] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  打开知识卡
+                </button>
+              </div>
+              <div className="grid gap-2 text-sm leading-6">
+                <div className="rounded-md border border-[#2f6b4f]/18 bg-[#edf3ea] p-3">
+                  <p className="font-semibold text-[#245f46]">例子</p>
+                  <p className="mt-1">{selectedCard?.example ?? activeTerm?.example ?? selectedNode.example}</p>
+                </div>
+                <div className="rounded-md border border-[#8f3b2f]/18 bg-[#fff0ec] p-3">
+                  <p className="font-semibold text-[#8f3b2f]">反例</p>
+                  <p className="mt-1">{selectedCard?.counter_example ?? activeTerm?.counter_example ?? selectedNode.counterExample}</p>
+                </div>
+              </div>
+            </div>
+            <p className="mt-3 rounded-md border border-[#2f3b2f]/12 bg-white/70 p-3 text-sm leading-6 text-[#6a675c]">
+              {selectedCard?.safety_notice ?? "学习内容只用于传统文化学习与娱乐体验，不替代医疗、法律、投资等专业建议。"}
+            </p>
+          </article>
+
+          <article className="rounded-md border border-[#9a6a2f]/18 bg-[#fff9e8] p-4">
+            <div className="flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-[#7a2f24]" aria-hidden="true" />
+              <h3 className="font-semibold text-[#171814]">节点练习</h3>
+            </div>
+            <div className="mt-3 grid gap-3">
+              <div className="rounded-md border border-[#2f3b2f]/12 bg-white/82 p-3 text-sm leading-6">
+                <p className="font-semibold">{activeExercise?.title ?? `${selectedNode.title}练习`}</p>
+                <p className="mt-1 text-[#314239]">{activeExercise?.prompt ?? selectedNode.practicePrompt}</p>
+                <p className="mt-2 text-xs text-[#6a675c]">
+                  难度：{toDifficultyLabel(activeExercise?.difficulty ?? selectedNode.difficulty)} · 标准规则：
+                  {activeExercise?.answer ?? selectedNode.ruleId}
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <button
+                  type="button"
+                  onClick={() => onCompleteNode(selectedNode)}
+                  disabled={selectedStatus === "completed"}
+                  className="flex h-10 items-center justify-center rounded-md bg-[#245f46] px-4 text-sm font-semibold text-white transition hover:bg-[#1c4c38] disabled:cursor-not-allowed disabled:bg-[#9cad9f]"
+                >
+                  {selectedStatus === "completed" ? "已完成练习" : "提交并完成练习"}
+                </button>
+                <p className="text-sm text-[#6a675c]">
+                  {selectedStatus === "completed" ? "这个节点已计入学习进度。" : "提交后会记录进度，并推荐下一个未完成节点。"}
+                </p>
+              </div>
+              {!activeExercise && isLoading ? <p className="text-xs text-[#6a675c]">正在匹配接口练习，当前先显示节点内置练习。</p> : null}
+            </div>
+          </article>
         </div>
       </div>
     </section>
@@ -3348,18 +4237,57 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
+const linePreviewThemes: Record<LineValue, { card: string; mark: string; tag: string }> = {
+  6: {
+    card:
+      "border-[#3d4050]/25 bg-[radial-gradient(circle_at_50%_0%,rgba(61,64,80,0.22),transparent_58%),linear-gradient(180deg,#f8f3e8,#e6e0d3)]",
+    mark: "bg-[#3d4050] text-white",
+    tag: "动阴",
+  },
+  7: {
+    card:
+      "border-[#b9852e]/28 bg-[radial-gradient(circle_at_50%_0%,rgba(226,175,77,0.34),transparent_56%),linear-gradient(180deg,#fff9e8,#f3ead4)]",
+    mark: "bg-[#b9852e] text-white",
+    tag: "静阳",
+  },
+  8: {
+    card:
+      "border-[#4f755e]/25 bg-[radial-gradient(circle_at_50%_0%,rgba(79,117,94,0.24),transparent_58%),linear-gradient(180deg,#f7f7ed,#e5eadc)]",
+    mark: "bg-[#4f755e] text-white",
+    tag: "静阴",
+  },
+  9: {
+    card:
+      "border-[#8f3b2f]/30 bg-[radial-gradient(circle_at_50%_0%,rgba(174,75,48,0.36),transparent_56%),linear-gradient(180deg,#fff0df,#f2dcc8)]",
+    mark: "bg-[#8f3b2f] text-white",
+    tag: "动阳",
+  },
+};
+
 function LinePreview({ lines }: { lines: Array<{ lineNo: number; value: LineValue; label: string }> }) {
   return (
     <div className="mt-4 grid min-h-24 grid-cols-3 gap-2 sm:grid-cols-6">
       {Array.from({ length: 6 }, (_, index) => {
         const line = lines[index];
+        const theme = line ? linePreviewThemes[line.value] : null;
         return (
           <div
             key={`preview-${index + 1}`}
-            className="flex min-h-16 flex-col items-center justify-center rounded-md border border-[#9a6a2f]/18 bg-white/72 p-2 text-center"
+            className={`flex min-h-20 flex-col items-center justify-between rounded-md border p-2 text-center shadow-sm transition ${
+              theme ? theme.card : "border-[#9a6a2f]/18 bg-white/72"
+            }`}
           >
             <span className="text-xs text-[#6a675c]">{index + 1} 爻</span>
-            <span className="mt-1 text-sm font-semibold text-[#171814]">{line ? line.label : "待摇"}</span>
+            {line && theme ? (
+              <>
+                <span className={`grid h-7 min-w-7 place-items-center rounded-full px-2 text-xs font-semibold ${theme.mark}`}>
+                  {theme.tag}
+                </span>
+                <span className="text-sm font-semibold text-[#171814]">{line.label}</span>
+              </>
+            ) : (
+              <span className="my-auto text-sm font-semibold text-[#171814]">待摇</span>
+            )}
           </div>
         );
       })}
@@ -3431,9 +4359,42 @@ function ResultPanel({
   onOpenKnowledgeCard: (cardId: string) => void;
 }) {
   const yongshenLine = analysis?.yongshen?.line_no;
+  const keyEvidence = analysis?.evidence_tree.slice(0, 3) ?? [];
 
   return (
     <div className="grid gap-4">
+      <section className="grid gap-3 rounded-lg border border-[#2f6b4f]/18 bg-[#edf3ea] p-4 text-sm leading-6 text-[#314239]">
+        <div className="flex items-center gap-2">
+          <Eye className="h-5 w-5 text-[#245f46]" aria-hidden="true" />
+          <h3 className="font-semibold text-[#171814]">结果速览</h3>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <MiniMetric label="本卦" value={result.base_chart.name} />
+          <MiniMetric label="变卦" value={result.changed_chart.name} />
+          <MiniMetric
+            label="用神"
+            value={analysis?.yongshen ? `${analysis.yongshen.role} ${analysis.yongshen.line_no}爻` : "证据生成后显示"}
+          />
+        </div>
+        {keyEvidence.length > 0 ? (
+          <div className="rounded-md border border-[#2f3b2f]/12 bg-white/72 p-3">
+            <p className="font-medium">3 条关键依据</p>
+            <ul className="mt-1 grid gap-1">
+              {keyEvidence.map((node) => (
+                <li key={node.id}>
+                  {node.title}：{node.conclusion}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="rounded-md border border-[#2f3b2f]/12 bg-white/72 p-3">规则证据生成后，会在这里先显示 3 条关键依据。</p>
+        )}
+        <p className="rounded-md border border-[#2f6b4f]/18 bg-white/72 p-3">
+          {safety?.notice ?? "仅用于传统文化学习与娱乐互动，不替代医疗、法律、投资等专业意见。"}
+        </p>
+      </section>
+
       <div className="grid gap-3 md:grid-cols-2">
         <ChartMetric label="本卦" value={result.base_chart.name} />
         <ChartMetric label="变卦" value={result.changed_chart.name} />
@@ -3540,6 +4501,8 @@ function AnalysisPanel({
   analysisError: string | null;
   onRefreshAnalysis: () => void;
 }) {
+  const [expandedSections, setExpandedSections] = useState<EvidenceExpansionState>(defaultEvidenceExpansion);
+
   if (isAnalyzing && !analysis) {
     return (
       <div className="rounded-lg border border-[#2f6b4f]/18 bg-[#edf3ea] p-4 text-sm text-[#314239]">
@@ -3564,6 +4527,10 @@ function AnalysisPanel({
         </div>
       </div>
     );
+  }
+
+  function toggleSection(section: EvidenceSectionId) {
+    setExpandedSections((current) => toggleEvidenceSection(current, section));
   }
 
   return (
@@ -3600,19 +4567,33 @@ function AnalysisPanel({
         </div>
       ) : null}
 
-      <EvidenceList title="关键依据" nodes={analysis.evidence_tree} />
-      <EvidenceList title="反证与保留" nodes={analysis.counter_evidence} />
+      <div className="grid gap-2 sm:grid-cols-3">
+        <MiniMetric label="关键依据" value={`${analysis.evidence_tree.length} 条`} />
+        <MiniMetric label="反证与保留" value={`${analysis.counter_evidence.length} 条`} />
+        <MiniMetric label="现实提示" value={`${analysis.action_tips.length} 条`} />
+      </div>
 
-      {analysis.action_tips.length > 0 ? (
-        <div className="rounded-md border border-[#2f3b2f]/12 bg-white/72 p-3">
-          <p className="font-medium">现实提示</p>
-          <ul className="mt-1 grid gap-1">
-            {analysis.action_tips.map((tip) => (
-              <li key={tip}>{tip}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <ExpandableEvidenceList
+        id="keyEvidence"
+        title="关键依据"
+        nodes={analysis.evidence_tree}
+        emptyText="暂无关键依据"
+        expanded={expandedSections.keyEvidence}
+        onToggle={toggleSection}
+      />
+      <ExpandableEvidenceList
+        id="counterEvidence"
+        title="反证与保留"
+        nodes={analysis.counter_evidence}
+        emptyText="暂无反证与保留"
+        expanded={expandedSections.counterEvidence}
+        onToggle={toggleSection}
+      />
+      <ExpandableActionTips
+        tips={analysis.action_tips}
+        expanded={expandedSections.actionTips}
+        onToggle={toggleSection}
+      />
     </div>
   );
 }
@@ -3681,6 +4662,7 @@ function AiExplanationPanel({
             key={item.value}
             type="button"
             onClick={() => onModeChange(item.value)}
+            aria-pressed={mode === item.value}
             disabled={!canExplain || isLoading}
             className={`h-10 rounded-md border px-2 text-sm font-medium transition ${
               mode === item.value
@@ -3800,7 +4782,7 @@ function AiExplanationPanel({
               {chatMessages.slice(-4).map((message) => (
                 <p
                   key={message.id}
-                  className={`rounded-md p-2 ${
+                  className={`whitespace-pre-wrap rounded-md p-2 ${
                     message.role === "user" ? "bg-[#edf3ea] text-[#314239]" : "bg-[#fff9e8] text-[#314239]"
                   }`}
                 >
@@ -3861,24 +4843,95 @@ function AiOutputList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function EvidenceList({ title, nodes }: { title: string; nodes: EvidenceNode[] }) {
-  if (nodes.length === 0) return null;
-
+function ExpandableEvidenceList({
+  id,
+  title,
+  nodes,
+  emptyText,
+  expanded,
+  onToggle,
+}: {
+  id: Extract<EvidenceSectionId, "keyEvidence" | "counterEvidence">;
+  title: string;
+  nodes: EvidenceNode[];
+  emptyText: string;
+  expanded: boolean;
+  onToggle: (section: EvidenceSectionId) => void;
+}) {
   return (
-    <div className="grid gap-2">
-      <p className="font-medium">{title}</p>
-      {nodes.map((node) => (
-        <article key={node.id} className="rounded-md border border-[#2f3b2f]/12 bg-white/72 p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-md bg-[#245f46] px-2 py-0.5 text-xs font-medium text-white">{node.rule_id}</span>
-            <span className="font-medium">{node.title}</span>
-            <span className="text-xs text-[#6a675c]">置信度 {node.confidence}</span>
-          </div>
-          <p className="mt-2">{node.conclusion}</p>
-          <p className="mt-1 text-xs leading-5 text-[#6a675c]">{node.premise}</p>
-          <p className="mt-1 text-xs leading-5 text-[#6a675c]">来源：{node.source_refs.join("；")}</p>
-        </article>
-      ))}
+    <div className="rounded-md border border-[#2f3b2f]/12 bg-white/72">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 p-3 text-left"
+      >
+        <span className="font-medium">{title}</span>
+        <span className="flex items-center gap-2 text-sm text-[#6a675c]">
+          {nodes.length} 条
+          <span className="text-lg leading-none">{expanded ? "−" : "+"}</span>
+        </span>
+      </button>
+      {expanded ? (
+        <div className="grid gap-2 border-t border-[#2f3b2f]/10 p-3">
+          {nodes.length > 0 ? (
+            nodes.map((node) => (
+              <article key={node.id} className="rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md bg-[#245f46] px-2 py-0.5 text-xs font-medium text-white">{node.rule_id}</span>
+                  <span className="font-medium">{node.title}</span>
+                  <span className="text-xs text-[#6a675c]">置信度 {node.confidence}</span>
+                </div>
+                <p className="mt-2">{node.conclusion}</p>
+                <p className="mt-1 text-xs leading-5 text-[#6a675c]">{node.premise}</p>
+                <p className="mt-1 text-xs leading-5 text-[#6a675c]">来源：{node.source_refs.join("；")}</p>
+              </article>
+            ))
+          ) : (
+            <p className="rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3 text-[#6a675c]">{emptyText}</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ExpandableActionTips({
+  tips,
+  expanded,
+  onToggle,
+}: {
+  tips: string[];
+  expanded: boolean;
+  onToggle: (section: EvidenceSectionId) => void;
+}) {
+  return (
+    <div className="rounded-md border border-[#2f3b2f]/12 bg-white/72">
+      <button
+        type="button"
+        onClick={() => onToggle("actionTips")}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 p-3 text-left"
+      >
+        <span className="font-medium">现实提示</span>
+        <span className="flex items-center gap-2 text-sm text-[#6a675c]">
+          {tips.length} 条
+          <span className="text-lg leading-none">{expanded ? "−" : "+"}</span>
+        </span>
+      </button>
+      {expanded ? (
+        <div className="border-t border-[#2f3b2f]/10 p-3">
+          {tips.length > 0 ? (
+            <ul className="grid gap-1 rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3">
+              {tips.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="rounded-md border border-[#2f3b2f]/12 bg-[#fffdf7] p-3 text-[#6a675c]">暂无现实提示</p>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3932,8 +4985,8 @@ function parseSseBlock(block: string): AiStreamEvent | null {
 
 async function readApiError(response: Response, fallback: string): Promise<string> {
   try {
-    const payload = (await response.json()) as { error?: string };
-    return payload.error ?? fallback;
+    const payload = (await response.json()) as { error?: string; message?: string };
+    return payload.message ?? payload.error ?? fallback;
   } catch {
     return fallback;
   }
@@ -3950,9 +5003,145 @@ function toAiDeltaLabel(field: AiDelta["field"]): string {
   return labels[field];
 }
 
+function toLearningNodeStatusLabel(status: LearningNodeStatus): string {
+  if (status === "completed") return "已完成";
+  if (status === "current") return "当前";
+  return "未开始";
+}
+
+function toDifficultyLabel(difficulty: LearningExercise["difficulty"]): string {
+  if (difficulty === "beginner") return "入门";
+  if (difficulty === "intermediate") return "进阶";
+  return "高阶";
+}
+
+function getLearningContext(analysis: AnalysisResult | null, fallbackScenario: (typeof scenarios)[number]): LearningContext {
+  const analysisScenario = analysis?.question_type;
+  const scenario = scenarios.includes(analysisScenario as (typeof scenarios)[number])
+    ? (analysisScenario as (typeof scenarios)[number])
+    : fallbackScenario;
+  return {
+    scenario,
+    ruleId: analysis?.evidence_tree[0]?.rule_id,
+  };
+}
+
+function buildLearningUrl(path: string, context: LearningContext, limit: number): string {
+  const params = new URLSearchParams({
+    scenario: context.scenario,
+    limit: String(limit),
+  });
+  if (context.ruleId) params.set("rule_id", context.ruleId);
+  if (context.term) params.set("term", context.term);
+  if (context.difficulty) params.set("difficulty", context.difficulty);
+  return `${path}?${params.toString()}`;
+}
+
+function formatFollowupAnswer(output: AiReadingOutput): string {
+  const sections = [
+    output.summary,
+    output.key_evidence.length > 0
+      ? `依据：${output.key_evidence.map((item) => item.plain_explanation).join("；")}`
+      : "",
+    output.counter_evidence.length > 0 ? `反证：${output.counter_evidence.join("；")}` : "",
+    output.action_tips.length > 0 ? `建议：${output.action_tips.join("；")}` : "",
+  ];
+  return sections.filter(Boolean).join("\n");
+}
+
+export function getDefaultCreatorSource(hasReading: boolean, hasCases: boolean): CreatorSourceType {
+  void hasCases;
+  return hasReading ? "reading" : "case";
+}
+
+export function buildCreatorExportPayload(input: {
+  sourceType: CreatorSourceType;
+  readingId?: string;
+  caseId?: string;
+  exportType: CreatorExportType;
+}) {
+  if (input.sourceType === "reading") {
+    if (!input.readingId) throw new Error("reading_id is required");
+    return {
+      reading_id: input.readingId,
+      export_type: input.exportType,
+    };
+  }
+  if (!input.caseId) throw new Error("case_id is required");
+  return {
+    case_id: input.caseId,
+    export_type: input.exportType,
+  };
+}
+
+export function formatCreatorExportText(exportResult: CreatorExportResult): string {
+  return [
+    `# ${exportResult.title}`,
+    "",
+    "## 素材内容",
+    ...exportResult.content_sections.map((section, index) => `${index + 1}. ${section}`),
+    "",
+    "## 安全提示",
+    exportResult.safety_notice,
+  ].join("\n");
+}
+
+function toCreatorExportTypeLabel(exportType: CreatorExportType): string {
+  return creatorMaterialTypes.find((type) => type.value === exportType)?.label ?? exportType;
+}
+
+export function getLearningNodeStatuses(
+  nodes: LearningPathNode[],
+  progress: Array<{ subject_id: string; subject_type: string }>,
+): Record<string, LearningNodeStatus> {
+  const completedIds = new Set(
+    progress.filter((item) => item.subject_type === "exercise").map((item) => item.subject_id),
+  );
+  const firstOpenIndex = nodes.findIndex((node) => !completedIds.has(node.id));
+  const currentIndex = firstOpenIndex === -1 ? nodes.length - 1 : firstOpenIndex;
+  return Object.fromEntries(
+    nodes.map((node, index) => {
+      if (completedIds.has(node.id)) return [node.id, "completed"];
+      return [node.id, index === currentIndex ? "current" : "locked"];
+    }),
+  );
+}
+
+export function getDefaultLearningNodeId(
+  nodes: LearningPathNode[],
+  progress: Array<{ subject_id: string; subject_type: string }>,
+): string {
+  const statuses = getLearningNodeStatuses(nodes, progress);
+  return nodes.find((node) => statuses[node.id] === "current")?.id ?? nodes[0]?.id ?? "";
+}
+
+export function buildLearningExerciseProgress(node: LearningPathNode) {
+  return {
+    subject_id: node.id,
+    subject_type: "exercise" as const,
+    completed: true,
+    badge: node.title,
+    score: 100,
+  };
+}
+
+function getLearningContextForNode(node: LearningPathNode): LearningContext {
+  return {
+    scenario: node.scenario,
+    ruleId: node.ruleId,
+    term: node.term,
+    difficulty: node.difficulty,
+  };
+}
+
+type CoinToss = 2 | 3;
+
+export function rollCoinsFromTosses(tosses: [CoinToss, CoinToss, CoinToss]): LineValue {
+  return (tosses[0] + tosses[1] + tosses[2]) as LineValue;
+}
+
 function rollCoins(): LineValue {
-  const total = Array.from({ length: 3 }, () => (Math.random() > 0.5 ? 3 : 2)).reduce((sum, value) => sum + value, 0);
-  return total as LineValue;
+  return rollCoinsFromTosses(Array.from({ length: 3 }, () => (Math.random() > 0.5 ? 3 : 2)) as [CoinToss, CoinToss, CoinToss]);
 }
 
 function getAnonymousId(): string {

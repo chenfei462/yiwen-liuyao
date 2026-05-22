@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({
-      cases: listCases({
+      cases: await listCases({
         scenario: scenario ? (scenario as Scenario) : undefined,
         hexagram: url.searchParams.get("hexagram") ?? undefined,
         rule_id: url.searchParams.get("rule_id") ?? undefined,

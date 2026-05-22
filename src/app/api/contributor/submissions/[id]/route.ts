@@ -5,7 +5,7 @@ import { getSubmission, patchContributorSubmission } from "@/domain/reading-serv
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    return NextResponse.json({ submission: getSubmission(id) });
+    return NextResponse.json({ submission: await getSubmission(id) });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Submission not found")) {
       return NextResponse.json({ error: "submission_not_found" }, { status: 404 });
@@ -17,7 +17,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    return NextResponse.json({ submission: patchContributorSubmission(id, await request.json()) });
+    return NextResponse.json({ submission: await patchContributorSubmission(id, await request.json()) });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json({ error: "invalid_request", issues: error.issues }, { status: 400 });

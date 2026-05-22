@@ -5,10 +5,52 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  email TEXT UNIQUE,
+  password_hash TEXT,
+  email_verified_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  last_login_at TIMESTAMPTZ,
   nickname TEXT,
   age_gate BOOLEAN NOT NULL DEFAULT FALSE,
   region TEXT,
   privacy_level TEXT NOT NULL DEFAULT 'standard',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  anonymous_id_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS auth_audit_logs (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id),
+  anonymous_id_hash TEXT,
+  detail TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -236,6 +278,11 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_expires ON auth_sessions(user_id, expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id, expires_at) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_user ON email_verification_tokens(user_id, expires_at) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_user_created ON auth_audit_logs(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_cards_rule_scenario ON knowledge_cards(rule_id, scenario) WHERE status = 'approved';
 CREATE INDEX IF NOT EXISTS idx_ai_explanations_reading_mode ON ai_explanations(reading_id, mode);
 CREATE INDEX IF NOT EXISTS idx_messages_reading_created ON messages(reading_id, created_at);
@@ -653,6 +700,7 @@ CREATE TABLE IF NOT EXISTS privacy_data_exports (
   status TEXT NOT NULL CHECK (status IN ('queued', 'processing', 'completed', 'failed')),
   export_format TEXT NOT NULL CHECK (export_format IN ('json', 'csv')),
   includes_raw_question_text BOOLEAN NOT NULL DEFAULT FALSE CHECK (includes_raw_question_text = FALSE),
+  includes_private_followups BOOLEAN NOT NULL DEFAULT FALSE CHECK (includes_private_followups = FALSE),
   download_url TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at TIMESTAMPTZ
@@ -677,3 +725,11 @@ CREATE INDEX IF NOT EXISTS idx_ops_incidents_status ON ops_incidents(status, sev
 CREATE INDEX IF NOT EXISTS idx_commercial_billing_simulations_contributor ON commercial_billing_simulations(contributor_id, period);
 CREATE INDEX IF NOT EXISTS idx_privacy_data_exports_user ON privacy_data_exports(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_compliance_reviews_status ON compliance_reviews(status, risk_level, created_at);
+
+
+-- Shared JSONB snapshot store for transitional domain services such as reading-service.
+CREATE TABLE IF NOT EXISTS domain_snapshots (
+  scope TEXT PRIMARY KEY,
+  payload JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

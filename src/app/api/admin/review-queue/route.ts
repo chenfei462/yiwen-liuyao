@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import { requireAdmin } from "@/domain/auth";
 import { listReviewQueue } from "@/domain/reading-service";
 
-export async function GET() {
-  return NextResponse.json({ review_queue: listReviewQueue() });
+export async function GET(request: Request) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
+  return NextResponse.json({ review_queue: await listReviewQueue() });
 }

@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "invalid_platform", issues: parsedPlatform.error.issues }, { status: 400 });
   }
   return NextResponse.json(
-    getAppBootstrap({
+    await getAppBootstrap({
       platform: parsedPlatform.data as ClientPlatform,
       anonymous_id: url.searchParams.get("anonymous_id") ?? "anonymous",
     }),
