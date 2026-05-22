@@ -10,6 +10,7 @@ import {
   getCourse,
   getCourseProgress,
   getCreatorExport,
+  getLearningCard,
   initReading,
   listAdminExperiments,
   listCases,
@@ -23,6 +24,11 @@ import {
 } from "./reading-service";
 
 const scenario = SCENARIOS[0];
+const damagedChinesePattern = /�|\?\?\?\?/;
+
+function expectCleanChineseOutput(value: unknown) {
+  expect(JSON.stringify(value)).not.toMatch(damagedChinesePattern);
+}
 
 describe("V1.5 content growth service", () => {
   beforeEach(() => {
@@ -94,6 +100,54 @@ describe("V1.5 content growth service", () => {
 
     const summary = await getCourseProgress();
     expect(summary.progress.some((item) => item.course_id === course.id && item.lesson_id === course.lessons[0].id)).toBe(true);
+  });
+
+  test("keeps user-visible Chinese copy free of replacement characters and question-mark placeholders", async () => {
+    const cases = await listCases({ limit: 1 });
+    const caseDetail = await getCase(cases[0].id);
+    const courses = await listCourses();
+    const course = await getCourse(courses[0].id);
+    const experiment = await assignExperiment({ anonymous_id: "copy-check", surface: "result" });
+    const experiments = await listAdminExperiments();
+    const learningCard = await getLearningCard("kc-B-YS-001-01");
+    const init = await initReading({
+      question: "这次考试如何复习更稳？",
+      scenario,
+      timezone: "Asia/Shanghai",
+    });
+    await castReading({
+      reading_id: init.reading_id,
+      cast_method: "manual",
+      line_values: [7, 8, 7, 8, 9, 6],
+      cast_time: "2026-05-01",
+    });
+    const creatorExport = await createCreatorExport({
+      reading_id: init.reading_id,
+      case_id: caseDetail.id,
+      export_type: "article",
+    });
+
+    const visiblePayloads = {
+      cases,
+      caseDetail,
+      courses,
+      course,
+      experiment,
+      experiments,
+      learningCard,
+      rewrite_suggestions: init.rewrite_suggestions,
+      creatorExport,
+    };
+
+    expectCleanChineseOutput(visiblePayloads);
+    expect(JSON.stringify([cases, caseDetail])).toContain("乾为天");
+    expect(caseDetail.learning_summary).toContain("本案例用于学习取用");
+    expect(course.title).toContain("入门课");
+    expect(experiments.map((item) => item.name).join("\n")).toContain("结果页学习入口");
+    expect(learningCard.example).toContain("学习时先看");
+    expect(init.rewrite_suggestions.join("\n")).toContain("问题越具体越便于学习排盘");
+    expect(creatorExport.title).toContain("图文讲解");
+    expect(creatorExport.safety_notice).toContain("不构成现实决策建议");
   });
 
   test("creates sanitized creator exports and blocks high-risk readings", async () => {

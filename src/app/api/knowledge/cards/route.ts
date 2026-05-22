@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { SCENARIOS, type Scenario } from "@/domain/contracts";
 import { queryKnowledgeCards } from "@/domain/reading-service";
+import { requireOwnerScope } from "../../_auth";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
+  const readingId = url.searchParams.get("reading_id") ?? undefined;
   const scenario = url.searchParams.get("scenario");
   const limit = Number(url.searchParams.get("limit") ?? "8");
 
@@ -11,19 +13,25 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "invalid_scenario" }, { status: 400 });
   }
 
+  const scope = readingId ? requireOwnerScope(request) : undefined;
+  if (scope instanceof NextResponse) return scope;
+
   try {
     return NextResponse.json({
       cards: await queryKnowledgeCards({
-        reading_id: url.searchParams.get("reading_id") ?? undefined,
+        reading_id: readingId,
         rule_id: url.searchParams.get("rule_id") ?? undefined,
         term: url.searchParams.get("term") ?? undefined,
         scenario: scenario ? (scenario as Scenario) : undefined,
         limit: Number.isFinite(limit) ? limit : 8,
-      }),
+      }, scope),
     });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Reading not found")) {
       return NextResponse.json({ error: "reading_not_found" }, { status: 404 });
+    }
+    if (error instanceof Error && error.message.startsWith("Reading forbidden")) {
+      return NextResponse.json({ error: "forbidden" }, { status: 403 });
     }
     return NextResponse.json({ error: "knowledge_query_failed" }, { status: 500 });
   }
