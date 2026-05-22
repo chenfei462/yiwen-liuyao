@@ -607,7 +607,7 @@ const CASE_SCENARIOS: InitReadingRequest["scenario"][] = ["事业", "财务", "�
 const CASE_DIFFICULTIES: CaseDifficulty[] = ["beginner", "intermediate", "advanced"];
 const CASE_SOURCE_TYPES: CaseSourceType[] = ["classic", "editorial", "anonymized_user"];
 const RULE_ROTATION = ["B-YS-001", "B-WR-001", "B-DV-001", "B-XK-001", "B-SY-001", "B-HC-001"];
-const HEXAGRAM_ROTATION = ["乾为�?", "坤为�?", "水雷�?", "山水�?", "水天需", "天水�?", "地水�?", "水地�?"];
+const HEXAGRAM_ROTATION = ["乾为天", "坤为地", "水雷屯", "山水蒙", "水天需", "天水讼", "地水师", "水地比"];
 const YONGSHEN_BY_SCENARIO: Record<InitReadingRequest["scenario"], string> = {
   事业: "官鬼",
   财务: "妻财",
@@ -616,8 +616,8 @@ const YONGSHEN_BY_SCENARIO: Record<InitReadingRequest["scenario"], string> = {
   失物: "妻财",
   其他: "世爻",
 };
-const CREATOR_BANNED_TERMS = ["包准", "改命", "消灾", "一定复�?", "一定发�?", "诊断", "投资建议"];
-const CREATOR_SAFETY_NOTICE = "创作者素材仅用于传统文化学习、案例复盘和娱乐互动，不构成现实决策建议�?";
+const CREATOR_BANNED_TERMS = ["包准", "改命", "消灾", "一定复合", "一定发财", "诊断", "投资建议"];
+const CREATOR_SAFETY_NOTICE = "创作者素材仅用于传统文化学习、案例复盘和娱乐互动，不构成现实决策建议。";
 const ECOSYSTEM_BANNED_TERMS = [...CREATOR_BANNED_TERMS, "guaranteed", "get rich", "make someone return", "diagnosis", "investment advice"];
 const DEFAULT_CONTRIBUTOR_ID = "contributor_demo";
 const DEFAULT_CONTRIBUTOR_ROLES: ContributorRole[] = ["creator", "expert"];
@@ -641,8 +641,8 @@ const CASE_SEEDS: CaseRecord[] = Array.from({ length: 60 }, (_, index) => {
     yongshen: YONGSHEN_BY_SCENARIO[scenario],
     evidence_ids: [`case-${String(caseNo).padStart(3, "0")}:${ruleId}:01`, `case-${String(caseNo).padStart(3, "0")}:${companionRule}:02`],
     rule_ids: Array.from(new Set([ruleId, companionRule, "B-YS-001"])),
-    learning_summary: "本案例用于学习取用、证据排序和反证保留，公开展示前已脱敏�?",
-    counter_evidence: ["反证用于提示结论边界，不能省略�?"],
+    learning_summary: "本案例用于学习取用、证据排序和反证保留，公开展示前已脱敏。",
+    counter_evidence: ["反证用于提示结论边界，不能省略。"],
     source_refs: [`V1.5案例种子-${String(caseNo).padStart(2, "0")}`],
     license_note: "编辑自研或已授权脱敏案例",
     created_at: now,
@@ -651,18 +651,18 @@ const CASE_SEEDS: CaseRecord[] = Array.from({ length: 60 }, (_, index) => {
 });
 
 const COURSE_SEEDS: CourseRecord[] = [
-  makeCourseSeed("course-01", "入门�?", "beginner", ["article", "quiz", "practice"], ["case-001", "case-007"]),
-  makeCourseSeed("course-02", "装卦�?", "beginner", ["article", "case_review", "practice"], ["case-002", "case-008"]),
-  makeCourseSeed("course-03", "用神�?", "intermediate", ["article", "quiz", "case_review"], ["case-003", "case-009"]),
+  makeCourseSeed("course-01", "入门课", "beginner", ["article", "quiz", "practice"], ["case-001", "case-007"]),
+  makeCourseSeed("course-02", "装卦课", "beginner", ["article", "case_review", "practice"], ["case-002", "case-008"]),
+  makeCourseSeed("course-03", "用神课", "intermediate", ["article", "quiz", "case_review"], ["case-003", "case-009"]),
   makeCourseSeed("course-04", "证据树课", "intermediate", ["article", "case_review", "practice"], ["case-004", "case-010"]),
-  makeCourseSeed("course-05", "卦例复盘�?", "advanced", ["case_review", "quiz", "practice"], ["case-005", "case-011"]),
+  makeCourseSeed("course-05", "卦例复盘课", "advanced", ["case_review", "quiz", "practice"], ["case-005", "case-011"]),
 ];
 
 const EXPERIMENT_SEEDS: ExperimentRecord[] = [
   makeExperimentSeed("experiment-home-guidance", "home", "首页起卦引导"),
-  makeExperimentSeed("experiment-result-cta", "result", "结果页学习入�?"),
-  makeExperimentSeed("experiment-learning-entry", "learning", "知识卡入�?"),
-  makeExperimentSeed("experiment-share-card", "share", "分享卡样�?"),
+  makeExperimentSeed("experiment-result-cta", "result", "结果页学习入口"),
+  makeExperimentSeed("experiment-learning-entry", "learning", "知识卡入口"),
+  makeExperimentSeed("experiment-share-card", "share", "分享卡样式"),
   makeExperimentSeed("experiment-course-reco", "course", "课程推荐"),
 ];
 
@@ -697,7 +697,7 @@ export async function initReading(rawInput: unknown, scope: PrincipalScope = {})
     safety_status: safety,
     rewrite_suggestions:
       safety.status === "allowed"
-        ? ["?????????????????????????????????"]
+        ? ["问题越具体越便于学习排盘，例如补充对象、时间范围和你想观察的重点。"]
         : [safety.notice],
   };
 }
@@ -755,10 +755,10 @@ export async function castReading(rawInput: unknown, scope: PrincipalScope = {})
   };
 }
 
-export async function analyzeReading(rawInput: unknown) {
+export async function analyzeReading(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: AnalyzeRequest = AnalyzeRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const cacheKey = getAnalysisCacheKey(input.reading_id, input.mode);
   const cached = analyses.get(cacheKey);
   if (cached && !input.force_refresh) {
@@ -794,15 +794,15 @@ export async function analyzeReading(rawInput: unknown) {
   return analysis;
 }
 
-export async function explainReading(rawInput: unknown) {
+export async function explainReading(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: ExplainRequest = ExplainRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const analysis = await analyzeReading({
     reading_id: input.reading_id,
     mode: toAnalyzeMode(input.mode),
     force_refresh: input.force_refresh,
-  });
+  }, scope);
   const knowledgeCards = getKnowledgeCardsForAnalysis(reading.scenario, analysis);
   return explainWithAi({
     question: reading.question,
@@ -814,10 +814,10 @@ export async function explainReading(rawInput: unknown) {
   });
 }
 
-export async function messageReading(rawInput: unknown) {
+export async function messageReading(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: MessageRequest = MessageRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const safety = classifyQuestion(input.message);
   await appendMessage({
     reading_id: input.reading_id,
@@ -856,7 +856,7 @@ export async function messageReading(rawInput: unknown) {
   const analysis = await analyzeReading({
     reading_id: input.reading_id,
     mode: input.followup_type === "learning_mode" ? "learning" : "light",
-  });
+  }, scope);
   const knowledgeCards = getKnowledgeCardsForAnalysis(reading.scenario, analysis, input.message);
   const events = await explainWithAi({
     question: reading.question,
@@ -891,10 +891,10 @@ export async function queryKnowledgeCards(input: {
   term?: string;
   scenario?: InitReadingRequest["scenario"];
   limit?: number;
-}) {
+}, scope: PrincipalScope = {}) {
   await hydrateStore();
   const analysis = input.reading_id
-    ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" })
+    ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" }, scope)
     : undefined;
   return searchKnowledgeCards({
     rule_id: input.rule_id,
@@ -924,8 +924,8 @@ export async function listLearningTerms(input: {
     rule_id: card.rule_id,
     scenario: card.scenario,
     definition: card.content,
-    example: `例：�?{card.scenario === "通用" ? "通用" : card.scenario}场景中，先把�?{card.term}”放回证据树观察。`,
-    counter_example: `反例：不能只凭�?{card.term}”一项就给出现实承诺。`,
+    example: `例：在${card.scenario === "通用" ? "通用" : card.scenario}场景中，先把“${card.term}”放回证据树观察。`,
+    counter_example: `反例：不能只凭“${card.term}”一项就给出现实承诺。`,
     source_refs: card.source_refs,
     status: card.status,
   }));
@@ -939,9 +939,9 @@ export async function getLearningCard(cardId: string) {
   }
   return {
     ...card,
-    example: `????? ${card.rule_id} ??????????????????`,
-    counter_example: "??????????????????????????????",
-    safety_notice: "????????????????????????????",
+    example: `学习时先看 ${card.rule_id} 的适用条件，再回到卦盘里的对应爻位。`,
+    counter_example: "不要把单张知识卡当成确定预测，也不要脱离反证和安全提示使用。",
+    safety_notice: "本知识卡用于传统文化学习与娱乐体验，不构成现实决策建议。",
   };
 }
 
@@ -1036,10 +1036,10 @@ export async function getMemberProgress(scope: PrincipalScope = {}) {
   };
 }
 
-export async function submitFeedback(rawInput: unknown) {
+export async function submitFeedback(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: FeedbackRequest = FeedbackRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const record: FeedbackRecord = {
     ...input,
     id: `feedback_${randomUUID()}`,
@@ -1056,10 +1056,10 @@ export async function submitFeedback(rawInput: unknown) {
   return record;
 }
 
-export async function createReadingShare(rawInput: unknown) {
+export async function createReadingShare(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: ShareReadingRequest = ShareReadingRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   if (reading.safety.status === "blocked") {
     appendAuditLog({
       action: "share_blocked",
@@ -1073,7 +1073,7 @@ export async function createReadingShare(rawInput: unknown) {
   if (!cast) {
     throw new Error(`Cast not found: ${input.reading_id}`);
   }
-  const analysis = await analyzeReading({ reading_id: input.reading_id, mode: "learning" });
+  const analysis = await analyzeReading({ reading_id: input.reading_id, mode: "learning" }, scope);
   const shareId = `share_${randomUUID()}`;
   const record: ShareRecord = {
     share_id: shareId,
@@ -1332,10 +1332,10 @@ export async function getCourseProgress() {
   };
 }
 
-export async function createCreatorExport(rawInput: unknown) {
+export async function createCreatorExport(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: CreatorExportRequest = CreatorExportRequestSchema.parse(rawInput);
-  const reading = input.reading_id ? ensureReading(input.reading_id) : undefined;
+  const reading = input.reading_id ? ensureReadingForScope(input.reading_id, scope) : undefined;
   if (reading?.safety.status === "blocked") {
     appendAuditLog({
       action: "creator_export_blocked",
@@ -1348,7 +1348,7 @@ export async function createCreatorExport(rawInput: unknown) {
 
   const caseRecord = input.case_id ? await getCase(input.case_id) : undefined;
   const cast = input.reading_id ? casts.get(input.reading_id) : undefined;
-  const analysis = input.reading_id && cast ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" }) : undefined;
+  const analysis = input.reading_id && cast ? await analyzeReading({ reading_id: input.reading_id, mode: "learning" }, scope) : undefined;
   const title = buildCreatorExportTitle(input.export_type, caseRecord, cast);
   const contentSections = buildCreatorExportSections(input.export_type, {
     caseRecord,
@@ -1389,12 +1389,12 @@ export async function createCreatorExport(rawInput: unknown) {
   return record;
 }
 
-export async function createCreatorScript(rawInput: unknown) {
+export async function createCreatorScript(rawInput: unknown, scope: PrincipalScope = {}) {
   const input = CreatorExportRequestSchema.parse(rawInput);
   return await createCreatorExport({
     ...input,
     export_type: "short_video_script",
-  });
+  }, scope);
 }
 
 export async function getCreatorExport(exportId: string) {
@@ -1531,8 +1531,8 @@ export async function getAppBootstrap(input: { platform: ClientPlatform; anonymo
     },
     capabilities: getPlatformCapabilities(input.platform),
     copy: {
-      safety_notice: "???????????????????????????",
-      privacy_notice: "?????????????????????",
+      safety_notice: "语音和导入仅用于传统文化学习与娱乐体验，不构成现实决策建议。",
+      privacy_notice: "语音、社区与导入内容默认走脱敏和审核流程。",
     },
   };
 }
@@ -1560,10 +1560,10 @@ export async function transcribeVoice(rawInput: unknown) {
   return record;
 }
 
-export async function voiceExplainReading(rawInput: unknown) {
+export async function voiceExplainReading(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: VoiceExplainRequest = VoiceExplainRequestSchema.parse(rawInput);
-  const reading = ensureReading(input.reading_id);
+  const reading = ensureReadingForScope(input.reading_id, scope);
   const record: VoiceJobRecord = {
     job_id: `voice_${randomUUID()}`,
     status: reading.safety.status === "blocked" ? "blocked" : "completed",
@@ -1691,10 +1691,10 @@ export async function getReadingImport(importId: string) {
   return record;
 }
 
-export async function createCommunityPost(rawInput: unknown) {
+export async function createCommunityPost(rawInput: unknown, scope: PrincipalScope = {}) {
   await hydrateStore();
   const input: CommunityPostRequest = CommunityPostRequestSchema.parse(rawInput);
-  const reading = input.reading_id ? ensureReading(input.reading_id) : undefined;
+  const reading = input.reading_id ? ensureReadingForScope(input.reading_id, scope) : undefined;
   if (reading?.safety.status === "blocked" || classifyQuestion(`${input.title} ${input.body}`).status === "blocked") {
     appendAuditLog({
       action: "community_post_blocked",
@@ -3032,7 +3032,7 @@ function makeCourseSeed(
     id: `${id}-lesson-${String(index + 1).padStart(2, "0")}`,
     title: `${title} ${index + 1}`,
     lesson_type: lessonType,
-    summary: "????????????????????",
+    summary: "围绕知识卡、练习和卦例复盘建立学习闭环。",
     knowledge_card_ids: KNOWLEDGE_CARD_SEEDS.slice(index, index + 2).map((card) => card.id),
     exercise_ids: EXERCISE_SEEDS.slice(index, index + 2).map((exercise) => exercise.id),
     case_ids: caseIds.slice(0, Math.max(1, Math.min(caseIds.length, index + 1))),
@@ -3043,7 +3043,7 @@ function makeCourseSeed(
     title,
     status: "published",
     difficulty,
-    summary: "??????????????????????????",
+    summary: "学习权益课程，只做传统文化知识讲解、练习和案例复盘。",
     lesson_count: lessons.length,
     lessons,
     badge: `${title}完成`,
@@ -3366,14 +3366,14 @@ function stableHash(value: string): number {
 }
 
 function buildCreatorExportTitle(exportType: CreatorExportType, caseRecord?: CaseRecord, cast?: CastRecord): string {
-  const base = caseRecord?.title ?? `${cast?.base_chart ?? "??"}????`;
+  const base = caseRecord?.title ?? `${cast?.base_chart ?? "排盘"}学习素材`;
   const labels: Record<CreatorExportType, string> = {
-    article: "????",
-    short_video_script: "?????",
-    long_image: "????",
-    chart_snapshot: "?????",
+    article: "图文讲解",
+    short_video_script: "短视频脚本",
+    long_image: "长图结构",
+    chart_snapshot: "排盘图导出",
   };
-  return `${base} ? ${labels[exportType]}`;
+  return `${base} · ${labels[exportType]}`;
 }
 
 function buildCreatorExportSections(
@@ -3385,41 +3385,41 @@ function buildCreatorExportSections(
   },
 ): string[] {
   const caseLine = context.caseRecord
-    ? `???${context.caseRecord.title}?${context.caseRecord.question_preview}????${context.caseRecord.source_refs.join("?")}`
-    : "??????????????????";
+    ? `案例：${context.caseRecord.title}，${context.caseRecord.question_preview}，来源：${context.caseRecord.source_refs.join("、")}`
+    : "案例：基于当前脱敏排盘生成学习素材。";
   const chartLine = context.cast
-    ? `???????${context.cast.base_chart}???${context.cast.changed_chart}????${context.cast.day_ganzhi}???${context.cast.month_branch}?`
-    : `?????${context.caseRecord?.base_chart ?? "???"} -> ${context.caseRecord?.changed_chart ?? "???"}?`;
+    ? `排盘快照：本卦${context.cast.base_chart}，变卦${context.cast.changed_chart}，日干支${context.cast.day_ganzhi}，月建${context.cast.month_branch}。`
+    : `排盘快照：${context.caseRecord?.base_chart ?? "待补充"} -> ${context.caseRecord?.changed_chart ?? "待补充"}。`;
   const evidenceLine = context.analysis
-    ? `?????${context.analysis.evidence_tree.slice(0, 3).map((node) => `${node.rule_id} ${node.conclusion}`).join("?")}`
-    : `?????${context.caseRecord?.rule_ids.join("?") ?? "???"}?`;
-  const counterLine = context.caseRecord?.counter_evidence[0] ?? context.analysis?.counter_evidence[0]?.conclusion ?? "????????????";
+    ? `证据主线：${context.analysis.evidence_tree.slice(0, 3).map((node) => `${node.rule_id} ${node.conclusion}`).join("；")}`
+    : `证据主线：${context.caseRecord?.rule_ids.join("、") ?? "规则卡"}。`;
+  const counterLine = context.caseRecord?.counter_evidence[0] ?? context.analysis?.counter_evidence[0]?.conclusion ?? "保留反证，不给确定承诺。";
 
   if (exportType === "short_video_script") {
     return [
-      "???????????????????????",
+      "开场：用一个脱敏卦例说明如何从排盘进入证据树。",
       chartLine,
       evidenceLine,
-      `???${counterLine}`,
-      "???????????????????????????????????",
+      `反证：${counterLine}`,
+      "收束：把卦例当作传统文化学习材料，不替代现实沟通、专业建议或个人判断。",
     ];
   }
 
   if (exportType === "long_image") {
     return [
-      "?????????????????????",
+      "长图标题区：卦名、场景和娱乐学习免责声明。",
       chartLine,
       evidenceLine,
-      `????${counterLine}`,
-      "??????????????????????",
+      `反证区：${counterLine}`,
+      "结尾区：知识卡引用、来源说明和隐私脱敏说明。",
     ];
   }
 
   if (exportType === "chart_snapshot") {
     return [
-      "?????????????????????????",
+      "排盘图信息：仅展示卦名、时间、六亲六神和动爻标识。",
       chartLine,
-      "??????????????????????",
+      "隐私规则：隐藏原始问题、私密追问和用户标识。",
       CREATOR_SAFETY_NOTICE,
     ];
   }
@@ -3428,8 +3428,8 @@ function buildCreatorExportSections(
     caseLine,
     chartLine,
     evidenceLine,
-    `?????${counterLine}`,
-    "?????????????????????",
+    `讲解边界：${counterLine}`,
+    "只做学习复盘，不输出承诺式结论。",
   ];
 }
 function assertCreatorContentSafe(sections: string[]): void {

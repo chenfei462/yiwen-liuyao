@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, test } from "vitest";
+import { SCENARIOS } from "./contracts";
 import {
   analyzeReading,
   castReading,
+  createCommunityPost,
+  createCreatorExport,
+  createCreatorScript,
+  createReadingShare,
   deleteReadingHistory,
   explainReading,
   initReading,
@@ -11,6 +16,8 @@ import {
   queryKnowledgeCards,
   resetReadingStoreForTests,
   setReadingSnapshotStoreForTests,
+  submitFeedback,
+  voiceExplainReading,
 } from "./reading-service";
 
 describe("reading service stage-1 persistence", () => {
@@ -218,6 +225,37 @@ describe("reading service stage-1 persistence", () => {
 
     expect(cards.length).toBeGreaterThan(0);
     expect(cards.every((card) => card.status === "approved")).toBe(true);
+  });
+
+  test("rejects cross-owner reading access across read-derived write interfaces", async () => {
+    const ownerScope = { owner_id: "anonymous:owner-a" };
+    const otherScope = { owner_id: "anonymous:owner-b" };
+    const init = await initReading({
+      question: "Will this interview review help?",
+      scenario: SCENARIOS[0],
+      timezone: "Asia/Shanghai",
+    }, ownerScope);
+    await castReading({
+      reading_id: init.reading_id,
+      cast_method: "manual",
+      line_values: [7, 7, 7, 7, 7, 7],
+      cast_time: "2026-04-30",
+    }, ownerScope);
+
+    await expect(analyzeReading({ reading_id: init.reading_id, mode: "learning" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(explainReading({ reading_id: init.reading_id, mode: "learning" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(messageReading({ reading_id: init.reading_id, message: "Why this conclusion?" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(submitFeedback({ reading_id: init.reading_id, feedback_type: "helpful" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(createReadingShare({ reading_id: init.reading_id, visibility: "public_anonymous" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(createCreatorExport({ reading_id: init.reading_id, export_type: "article" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(createCreatorScript({ reading_id: init.reading_id, export_type: "short_video_script" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(queryKnowledgeCards({ reading_id: init.reading_id }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(voiceExplainReading({ reading_id: init.reading_id, mode: "learning", voice: "standard" }, otherScope)).rejects.toThrow(/Reading forbidden/);
+    await expect(createCommunityPost({ post_type: "case_discussion", title: "Review", body: "Learning review", reading_id: init.reading_id }, otherScope)).rejects.toThrow(/Reading forbidden/);
+
+    await expect(analyzeReading({ reading_id: init.reading_id, mode: "learning" }, ownerScope)).resolves.toMatchObject({ reading_id: init.reading_id });
+    await expect(createReadingShare({ reading_id: init.reading_id, visibility: "public_anonymous" }, ownerScope)).resolves.toMatchObject({ reading_id: init.reading_id });
+    await expect(createCreatorExport({ reading_id: init.reading_id, export_type: "article" }, ownerScope)).resolves.toMatchObject({ reading_id: init.reading_id });
   });
 });
 

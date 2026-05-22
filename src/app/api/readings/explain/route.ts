@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { explainReading } from "@/domain/reading-service";
 import type { AiStreamEvent } from "@/domain/ai-orchestrator";
+import { requireOwnerScope } from "../../_auth";
 
 export async function POST(request: Request) {
+  const scope = requireOwnerScope(request);
+  if (scope instanceof NextResponse) return scope;
   try {
     const payload = await request.json();
-    const events = await explainReading(payload);
+    const events = await explainReading(payload, scope);
     if (payload?.stream === false) {
       return NextResponse.json(events.find((event) => event.type === "final")?.data ?? { error: "missing_final" });
     }
@@ -42,6 +45,9 @@ function toErrorResponse(error: unknown, fallback: string) {
   }
   if (error instanceof Error && error.message.startsWith("Reading not found")) {
     return NextResponse.json({ error: "reading_not_found" }, { status: 404 });
+  }
+  if (error instanceof Error && error.message.startsWith("Reading forbidden")) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   if (error instanceof Error && error.message.startsWith("Cast not found")) {
     return NextResponse.json({ error: "chart_not_found" }, { status: 404 });
